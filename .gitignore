@@ -1,0 +1,21 @@
+# API keys — NEVER commit this
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Milestone 7: RAG — generated vector DB (rebuilt from PDFs)
+chroma_db/
+# Milestone 8: Multimodal — generated chart images
+charts/
