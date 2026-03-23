@@ -21,6 +21,72 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
+from src.data_loader import load_data, clean_column_name, normalize_columns, infer_date_column
+from src.tools import set_active_dataframe
+
+def load_data_from_df(raw_df, selected_date_col):
+    df, rename_map = normalize_columns(raw_df.copy())
+    selected_date_col = clean_column_name(selected_date_col)
+
+    if selected_date_col not in df.columns:
+        raise ValueError(
+            f"Selected date column '{selected_date_col}' not found after normalization. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    df[selected_date_col] = pd.to_datetime(df[selected_date_col], errors="coerce")
+    df = df.dropna(subset=[selected_date_col]).copy()
+
+    if df.empty:
+        raise ValueError("No valid rows remain after parsing the selected date column.")
+
+    if selected_date_col != "date":
+        df = df.rename(columns={selected_date_col: "date"})
+
+    dimension_keys = [
+        c for c in df.columns
+        if c != "date" and not pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    metric_keys = [
+        c for c in df.columns
+        if c != "date" and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    return {
+        "df": df,
+        "dimension_keys": dimension_keys,
+        "metric_keys": metric_keys,
+        "column_mapping": rename_map,
+    }
+
+
+def build_dynamic_anomaly_summary(df, anomaly_ts, selected_metrics, selected_groups):
+    before = df[df["date"] < anomaly_ts]
+    after = df[df["date"] >= anomaly_ts]
+
+    lines = [f"Anomaly analysis starting {anomaly_ts.date()}."]
+
+    for m in selected_metrics:
+        if m not in df.columns:
+            continue
+
+        b = before[m].mean() if len(before) else 0
+        a = after[m].mean() if len(after) else 0
+        pct = ((a - b) / b * 100) if b else 0
+        lines.append(f"  {m}: {b:.3g} → {a:.3g} ({pct:+.1f}%)")
+
+        for grp in selected_groups[:2]:
+            if grp in df.columns:
+                top_vals = df[grp].dropna().astype(str).unique()[:4]
+                for val in top_vals:
+                    bd = before[before[grp].astype(str) == str(val)][m].mean() if len(before) else 0
+                    ad = after[after[grp].astype(str) == str(val)][m].mean() if len(after) else 0
+                    p2 = ((ad - bd) / bd * 100) if bd else 0
+                    lines.append(f"    [{grp}={val}] {bd:.3g} → {ad:.3g} ({p2:+.1f}%)")
+
+    return "\n".join(lines)
+  
 # ── Make src/ importable ──────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -145,43 +211,94 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
 
-    api_key = st.text_input("OpenAI API Key", type="password",
-                            placeholder="sk-...",
-                            help="Your key is never stored.")
+    api_key = st.text_input(
+        "OpenAI API Key",
+        type="password",
+        placeholder="sk-...",
+        help="Your key is never stored."
+    )
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
     st.markdown("---")
     st.markdown("### 📁 Data Source")
 
-    data_source = st.radio("Choose data", ["Use sample dataset", "Upload your own CSV"],
-                           index=0)
+    data_source = st.radio(
+        "Choose data",
+        ["Use sample dataset", "Upload your own CSV"],
+        index=0
+    )
 
     df = None
+    raw_df = None
+    dimension_keys = []
+    metric_keys = []
 
     if data_source == "Use sample dataset":
         sample_path = Path(__file__).parent / "data" / "sample_ecommerce_kpi_data.csv"
         if sample_path.exists():
-            df = pd.read_csv(sample_path, parse_dates=["date"])
-            st.success(f"✓ Loaded {len(df):,} rows")
+            raw_df = pd.read_csv(sample_path)
+            st.success(f"✓ Loaded {len(raw_df):,} rows")
         else:
             st.error("sample_ecommerce_kpi_data.csv not found in data/")
     else:
         uploaded = st.file_uploader("Upload CSV", type=["csv"])
         if uploaded:
-            df = pd.read_csv(uploaded, parse_dates=["date"])
-            st.success(f"✓ {uploaded.name} — {len(df):,} rows")
+            raw_df = pd.read_csv(uploaded)
+            st.success(f"✓ {uploaded.name} — {len(raw_df):,} rows")
+
+    if raw_df is not None:
+        preview_df, _ = normalize_columns(raw_df.copy())
+        inferred_date = infer_date_column(preview_df)
+
+        st.markdown("---")
+        st.markdown("### 🧭 Column Mapping")
+
+        date_options = list(preview_df.columns)
+        if len(date_options) > 0:
+            default_date_idx = date_options.index(inferred_date) if inferred_date in date_options else 0
+            selected_date_col = st.selectbox("Date column", date_options, index=default_date_idx)
+        else:
+            selected_date_col = None
+
+        if selected_date_col is not None:
+            loaded = load_data_from_df(raw_df, selected_date_col)
+            df = loaded["df"]
+            dimension_keys = loaded["dimension_keys"]
+            metric_keys = loaded["metric_keys"]
+
+            set_active_dataframe(df)
+
+            default_perf = [c for c in ["revenue", "orders", "conversion_rate", "marketing_spend"] if c in metric_keys]
+            selected_metrics = st.multiselect(
+                "Performance metrics to analyze",
+                options=metric_keys,
+                default=default_perf or metric_keys[: min(3, len(metric_keys))]
+            )
+
+            selected_groups = st.multiselect(
+                "Grouping / segment columns",
+                options=dimension_keys,
+                default=[c for c in ["region", "device_type", "product_category"] if c in dimension_keys]
+            )
+
+            st.session_state["selected_metrics"] = selected_metrics
+            st.session_state["selected_groups"] = selected_groups
+            st.session_state["resolved_dimension_keys"] = dimension_keys
+            st.session_state["resolved_metric_keys"] = metric_keys
 
     st.markdown("---")
     st.markdown("### 📚 Knowledge Base")
-    pdf_files = st.file_uploader("Upload PDFs (optional)",
-                                 type=["pdf"], accept_multiple_files=True,
-                                 help="Powers the RAG explanation. Skip to use LLM-only mode.")
+    pdf_files = st.file_uploader(
+        "Upload PDFs (optional)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        help="Powers the RAG explanation. Skip to use LLM-only mode."
+    )
 
     st.markdown("---")
     st.markdown("### 🔧 Settings")
-    anomaly_date = st.date_input("Anomaly start date",
-                                 value=pd.Timestamp("2024-04-20"))
+    anomaly_date = st.date_input("Anomaly start date", value=pd.Timestamp("2024-04-20"))
     top_k = st.slider("RAG top-k chunks", 3, 10, 5)
     run_vision = st.checkbox("Enable vision analysis", value=True)
 
@@ -203,8 +320,10 @@ if not os.environ.get("OPENAI_API_KEY"):
 try:
     from src.data_loader import load_data
     from src.agent import run_agent
+    from src.prompts import REACT_AGENT_SYSTEM_PROMPT
     from src.multimodal import KPIChartGenerator, MultimodalAnalyzer, CrossModalChecker
     from src.rag_pipeline import RAGPipeline
+    from src.prompts import REACT_AGENT_SYSTEM_PROMPT
     IMPORTS_OK = True
 except ImportError as e:
     st.error(f"Import error: {e}\n\nMake sure you've installed requirements:\n"
@@ -233,61 +352,78 @@ with tab1:
     # KPI summary cards
     anomaly_ts = pd.Timestamp(anomaly_date)
     before = df[df["date"] < anomaly_ts]
-    after  = df[df["date"] >= anomaly_ts]
+    after = df[df["date"] >= anomaly_ts]
 
+    selected_metrics = st.session_state.get("selected_metrics", [])
+    selected_groups = st.session_state.get("selected_groups", [])
     numeric_cols = df.select_dtypes("number").columns.tolist()
-    summary_metrics = [c for c in ["revenue", "conversion_rate", "marketing_spend", "orders"]
-                       if c in numeric_cols]
 
-    cols = st.columns(len(summary_metrics))
-    for col, m in zip(cols, summary_metrics):
-        b_mean = before[m].mean() if len(before) else 0
-        a_mean = after[m].mean()  if len(after)  else 0
-        pct = (a_mean - b_mean) / b_mean * 100 if b_mean else 0
-        sign = "▼" if pct < 0 else "▲"
-        cls  = "negative" if pct < 0 else "positive"
-        col.markdown(f"""
-        <div class="metric-card">
-          <div class="value">{a_mean:,.2f}</div>
-          <div class="label">{m.replace('_',' ').title()}</div>
-          <div class="delta {cls}">{sign} {abs(pct):.1f}% vs pre-anomaly</div>
-        </div>
-        """, unsafe_allow_html=True)
+    summary_metrics = [c for c in selected_metrics if c in numeric_cols]
+
+    if len(summary_metrics) == 0:
+        st.info("No performance metrics selected. Choose one or more numeric metrics in the sidebar.")
+    else:
+        cols = st.columns(len(summary_metrics))
+        for col, m in zip(cols, summary_metrics):
+            b_mean = before[m].mean() if len(before) else 0
+            a_mean = after[m].mean() if len(after) else 0
+            pct = (a_mean - b_mean) / b_mean * 100 if b_mean else 0
+            sign = "▼" if pct < 0 else "▲"
+            cls = "negative" if pct < 0 else "positive"
+            col.markdown(f"""
+            <div class="metric-card">
+              <div class="value">{a_mean:,.2f}</div>
+              <div class="label">{m.replace('_',' ').title()}</div>
+              <div class="delta {cls}">{sign} {abs(pct):.1f}% vs pre-anomaly</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Chart
     st.markdown("##### Time-series charts with anomaly window")
     with st.spinner("Generating charts..."):
         chart_gen = KPIChartGenerator(df, output_dir=tempfile.mkdtemp())
 
-        c1, c2 = st.columns(2)
-        with c1:
-            p = chart_gen.plot_metric_timeseries(
-                "revenue", split_by="device_type",
-                anomaly_start=str(anomaly_date))
-            st.image(str(p), caption="Revenue by Device Type", use_container_width=True)
+        plot_pairs = []
+        for metric in summary_metrics[:4]:
+            split_by = selected_groups[0] if len(selected_groups) > 0 else None
+            plot_pairs.append((metric, split_by))
 
-        with c2:
-            p2 = chart_gen.plot_metric_timeseries(
-                "conversion_rate", split_by="device_type",
-                anomaly_start=str(anomaly_date))
-            st.image(str(p2), caption="Conversion Rate by Device Type", use_container_width=True)
+        if len(plot_pairs) == 0:
+            st.info("No charts generated because no valid metrics were selected.")
+        else:
+            chart_cols = st.columns(2)
 
-        c3, c4 = st.columns(2)
-        with c3:
-            p3 = chart_gen.plot_metric_timeseries(
-                "marketing_spend", split_by="region",
-                anomaly_start=str(anomaly_date))
-            st.image(str(p3), caption="Marketing Spend by Region", use_container_width=True)
+            for i, (metric, split_by) in enumerate(plot_pairs):
+                with chart_cols[i % 2]:
+                    try:
+                        p = chart_gen.plot_metric_timeseries(
+                            metric,
+                            split_by=split_by,
+                            anomaly_start=str(anomaly_date)
+                        )
+                        caption = metric.replace("_", " ").title()
+                        if split_by:
+                            caption += f" by {split_by.replace('_', ' ').title()}"
+                        st.image(str(p), caption=caption, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not plot {metric}: {e}")
 
-        with c4:
-            p4 = chart_gen.plot_dimension_comparison(
-                "revenue", "device_type",
-                before_end=str(anomaly_date - pd.Timedelta(days=1)),
-                after_start=str(anomaly_date))
-            st.image(str(p4), caption="Revenue Before vs After Anomaly", use_container_width=True)
-
+            if len(selected_groups) > 0 and len(summary_metrics) > 0:
+                try:
+                    p_compare = chart_gen.plot_dimension_comparison(
+                        summary_metrics[0],
+                        selected_groups[0],
+                        before_end=str(anomaly_date - pd.Timedelta(days=1)),
+                        after_start=str(anomaly_date)
+                    )
+                    st.image(
+                        str(p_compare),
+                        caption=f"{summary_metrics[0].replace('_', ' ').title()} before vs after by {selected_groups[0].replace('_', ' ').title()}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.warning(f"Could not generate comparison chart: {e}")
     # Tool-calling agent
     st.markdown("---")
     st.markdown("##### 🤖 Agent tool-calling output")
@@ -295,9 +431,14 @@ with tab1:
     if run_btn or "agent_result" not in st.session_state:
         with st.spinner("Agent is querying the dataset via tool calls..."):
             try:
+                selected_metrics = st.session_state.get("selected_metrics", [])
+                selected_groups = st.session_state.get("selected_groups", [])
+
                 anomaly_query = (
-                    f"Analyze the KPI dataset. The anomaly appears to start around "
-                    f"{anomaly_date}. Identify which metrics and segments are most affected. "
+                    f"Analyze the KPI dataset. The anomaly appears to start around {anomaly_date}. "
+                    f"Focus on these performance metrics if relevant: {selected_metrics}. "
+                    f"Use these grouping columns if relevant: {selected_groups}. "
+                    f"Identify which metrics and segments are most affected. "
                     f"Use the available tools to query the data and provide a structured finding."
                 )
                 agent_result = run_agent(
@@ -328,25 +469,15 @@ with tab2:
     st.caption("Retrieves relevant business context from the knowledge base to ground the LLM's explanation.")
 
     # Build anomaly summary from data
-    def build_anomaly_summary(df, anomaly_ts):
-        before = df[df["date"] < anomaly_ts]
-        after  = df[df["date"] >= anomaly_ts]
-        lines = [f"Anomaly detected starting {anomaly_ts.date()}."]
-        for m in ["revenue", "conversion_rate", "marketing_spend"]:
-            if m not in df.columns:
-                continue
-            b, a = before[m].mean(), after[m].mean()
-            pct = (a - b) / b * 100 if b else 0
-            lines.append(f"  {m}: {b:.3g} → {a:.3g} ({pct:+.1f}%)")
-            if "device_type" in df.columns:
-                for dev in df["device_type"].unique():
-                    bd = before[before["device_type"]==dev][m].mean()
-                    ad = after[after["device_type"]==dev][m].mean()
-                    p2 = (ad - bd) / bd * 100 if bd else 0
-                    lines.append(f"    [{dev}] {bd:.3g} → {ad:.3g} ({p2:+.1f}%)")
-        return "\n".join(lines)
+    selected_metrics = st.session_state.get("selected_metrics", [])
+    selected_groups = st.session_state.get("selected_groups", [])
 
-    anomaly_summary = build_anomaly_summary(df, anomaly_ts)
+    anomaly_summary = build_dynamic_anomaly_summary(
+        df,
+        anomaly_ts,
+        selected_metrics,
+        selected_groups
+    )
 
     with st.expander("📄 Anomaly summary sent to the LLM", expanded=False):
         st.code(anomaly_summary, language="text")
@@ -434,28 +565,53 @@ with tab3:
         st.info("Vision analysis is disabled. Enable it in the sidebar.")
     else:
         analyzer = MultimodalAnalyzer()
-        checker  = CrossModalChecker()
+        checker = CrossModalChecker()
 
-        # Generate overview chart
-        with st.spinner("Generating overview dashboard chart..."):
-            overview_path = chart_gen.plot_multimodal_overview(str(anomaly_date))
+        selected_metrics = st.session_state.get("selected_metrics", [])
+        selected_groups = st.session_state.get("selected_groups", [])
 
-        st.image(str(overview_path), caption="2×2 KPI Dashboard (sent to vision model)",
-                 use_container_width=True)
+        vision_metric = selected_metrics[0] if len(selected_metrics) > 0 else None
+        vision_group = selected_groups[0] if len(selected_groups) > 0 else None
 
-        if run_btn or "vision_result" not in st.session_state:
-            with st.spinner("GPT-4o-mini analyzing chart..."):
+        if vision_metric is None:
+            st.info("Select at least one performance metric in the sidebar to run vision analysis.")
+        else:
+            with st.spinner("Generating chart for vision analysis..."):
                 try:
-                    vis = analyzer.extract_anomaly_from_chart(overview_path, metric="revenue")
-                    data_summary = analyzer.build_data_summary(
-                        df, "revenue", str(anomaly_date), "device_type")
-                    consistency = checker.check_consistency(data_summary, vis)
-                    st.session_state["vision_result"]    = vis
-                    st.session_state["data_summary"]     = data_summary
-                    st.session_state["consistency"]      = consistency
+                    chart_gen = KPIChartGenerator(df, output_dir=tempfile.mkdtemp())
+                    overview_path = chart_gen.plot_metric_timeseries(
+                        vision_metric,
+                        split_by=vision_group,
+                        anomaly_start=str(anomaly_date)
+                    )
+                    st.image(
+                        str(overview_path),
+                        caption=f"{vision_metric.replace('_', ' ').title()}" + (
+                            f" by {vision_group.replace('_', ' ').title()}" if vision_group else ""
+                        ),
+                        use_container_width=True
+                    )
                 except Exception as e:
-                    st.session_state["vision_result"] = {"raw_text": f"Error: {e}"}
-                    st.session_state["consistency"]   = None
+                    overview_path = None
+                    st.error(f"Could not generate chart for vision analysis: {e}")
+
+            if overview_path is not None and (run_btn or "vision_result" not in st.session_state):
+                with st.spinner("GPT-4o-mini analyzing chart..."):
+                    try:
+                        vis = analyzer.extract_anomaly_from_chart(overview_path, metric=vision_metric)
+                        data_summary = analyzer.build_data_summary(
+                            df,
+                            vision_metric,
+                            str(anomaly_date),
+                            vision_group
+                        )
+                        consistency = checker.check_consistency(data_summary, vis)
+                        st.session_state["vision_result"] = vis
+                        st.session_state["data_summary"] = data_summary
+                        st.session_state["consistency"] = consistency
+                    except Exception as e:
+                        st.session_state["vision_result"] = {"raw_text": f"Error: {e}"}
+                        st.session_state["consistency"] = None
 
         vis = st.session_state.get("vision_result", {})
         consistency = st.session_state.get("consistency")
@@ -522,29 +678,32 @@ with tab4:
     st.caption(f"{len(df):,} rows · {len(df.columns)} columns")
 
     # Filters
-    col_f1, col_f2, col_f3 = st.columns(3)
+    dimension_keys = st.session_state.get("resolved_dimension_keys", [])
+    metric_keys = st.session_state.get("resolved_metric_keys", [])
+
     filters = {}
+    filter_cols = st.columns(3)
 
-    for col, label in [("region", "Region"), ("device_type", "Device Type")]:
-        if col in df.columns:
-            col_ref = col_f1 if col == "region" else col_f2
-            opts = ["All"] + sorted(df[col].dropna().unique().tolist())
-            sel = col_ref.selectbox(label, opts)
-            if sel != "All":
-                filters[col] = sel
+    for i, col_name in enumerate(dimension_keys[:3]):
+        opts = ["All"] + sorted(df[col_name].dropna().astype(str).unique().tolist())
+        sel = filter_cols[i].selectbox(col_name.replace("_", " ").title(), opts)
+        if sel != "All":
+            filters[col_name] = sel
 
-    metric_view = col_f3.selectbox("Metric to summarize",
-                                   [c for c in ["revenue","conversion_rate","marketing_spend","orders","sessions"]
-                                    if c in df.columns])
+    if len(metric_keys) == 0:
+        st.info("No numeric metrics available to summarize.")
+        metric_view = None
+    else:
+        metric_view = st.selectbox("Metric to summarize", metric_keys)
 
     fdf = df.copy()
-    for col, val in filters.items():
-        fdf = fdf[fdf[col] == val]
+    for col_name, val in filters.items():
+        fdf = fdf[fdf[col_name].astype(str) == str(val)]
 
-    # Summary by date
-    summary = fdf.groupby("date")[metric_view].mean().reset_index()
-    summary.columns = ["date", f"avg_{metric_view}"]
-    st.line_chart(summary.set_index("date"))
+    if metric_view is not None:
+        summary = fdf.groupby("date")[metric_view].mean().reset_index()
+        summary.columns = ["date", f"avg_{metric_view}"]
+        st.line_chart(summary.set_index("date"))
 
     st.dataframe(fdf.head(200), use_container_width=True)
 
