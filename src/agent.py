@@ -45,6 +45,8 @@ from tenacity import retry, wait_exponential_jitter, stop_after_attempt, retry_i
 from src.tools import TOOL_DEFINITIONS, TOOL_IMPLEMENTATIONS
 from src.rag_pipeline import RAGPipeline
 
+import streamlit as st
+
 # ---------------------------------------------------------------------------
 # Load API key from .env file
 # ---------------------------------------------------------------------------
