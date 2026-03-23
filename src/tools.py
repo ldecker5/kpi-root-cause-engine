@@ -19,16 +19,40 @@ from src.data_loader import load_data
 # ---------------------------------------------------------------------------
 # Load the dataset once when this module is imported
 # ---------------------------------------------------------------------------
-DF, DIMENSION_KEYS, METRIC_KEYS = load_data()
+_ACTIVE_DF = None
+_DIMENSION_KEYS = []
+_METRIC_KEYS = []
 
 
+def set_active_dataframe(df: pd.DataFrame):
+    global _ACTIVE_DF, _DIMENSION_KEYS, _METRIC_KEYS
+
+    _ACTIVE_DF = df.copy()
+
+    _DIMENSION_KEYS = [
+        c for c in _ACTIVE_DF.columns
+        if c != "date" and not pd.api.types.is_numeric_dtype(_ACTIVE_DF[c])
+    ]
+
+    _METRIC_KEYS = [
+        c for c in _ACTIVE_DF.columns
+        if c != "date" and pd.api.types.is_numeric_dtype(_ACTIVE_DF[c])
+    ]
+
+
+def initialize_default_data():
+    global _ACTIVE_DF, _DIMENSION_KEYS, _METRIC_KEYS
+    result = load_data()
+    _ACTIVE_DF = result["df"]
+    _DIMENSION_KEYS = result["dimension_keys"]
+    _METRIC_KEYS = result["metric_keys"]
+
+initialize_default_data()
 # ===========================================================================
 # PART 1: TOOL IMPLEMENTATIONS (the actual functions)
 # ===========================================================================
-
-def query_kpi_data(source, date_start, date_end, metrics, dimensions=None, agg="sum", limit=200):
-    """
-    TOOL #1: Query the KPI dataset.
+"""
+TOOL #1: Query the KPI dataset.
 
     What it does:
         Filters the dataset by date range and dimensions (like region, device_type),
@@ -49,35 +73,34 @@ def query_kpi_data(source, date_start, date_end, metrics, dimensions=None, agg="
     Returns:
         dict with success status, aggregates, and a preview of the data
     """
+def query_kpi_data(source, date_start, date_end, metrics, dimensions=None, agg="sum", limit=200):
+    global _ACTIVE_DF, _DIMENSION_KEYS, _METRIC_KEYS
+
+    if _ACTIVE_DF is None:
+        return {"success": False, "error": "No active dataset loaded."}
+
     ds = pd.to_datetime(date_start)
     de = pd.to_datetime(date_end)
 
-    # Handle missing or bad dimensions input
     if dimensions is None:
         dimensions = {}
     if not isinstance(dimensions, dict):
-        # Model sometimes sends a list instead of a dict — treat as no filter
         dimensions = {}
 
-    # Filter by date range
-    dff = DF[(DF["date"] >= ds) & (DF["date"] <= de)].copy()
+    dff = _ACTIVE_DF[(_ACTIVE_DF["date"] >= ds) & (_ACTIVE_DF["date"] <= de)].copy()
 
-    # Filter by each dimension (e.g., region="West")
     for k, v in dimensions.items():
-        if k not in DIMENSION_KEYS:
-            return {"success": False, "error": f"Invalid dimension: {k}. Valid dimensions: {DIMENSION_KEYS}"}
+        if k not in _DIMENSION_KEYS:
+            return {"success": False, "error": f"Invalid dimension: {k}. Valid dimensions: {_DIMENSION_KEYS}"}
         dff = dff[dff[k].astype(str) == str(v)]
 
-    # If no data matches the filters
     if dff.empty:
         return {"success": True, "rows_returned": 0, "aggregates": {}, "preview": []}
 
-    # Validate that requested metrics exist
     for m in metrics:
-        if m not in METRIC_KEYS:
-            return {"success": False, "error": f"Invalid metric: {m}. Valid metrics: {METRIC_KEYS}"}
+        if m not in _METRIC_KEYS:
+            return {"success": False, "error": f"Invalid metric: {m}. Valid metrics: {_METRIC_KEYS}"}
 
-    # Aggregate the metrics
     if agg == "sum":
         aggregates = {m: float(dff[m].sum()) for m in metrics}
     elif agg == "mean":
@@ -85,7 +108,6 @@ def query_kpi_data(source, date_start, date_end, metrics, dimensions=None, agg="
     else:
         return {"success": False, "error": "agg must be 'sum' or 'mean'"}
 
-    # Return a preview of the actual rows (so the LLM can see the data)
     preview = (
         dff.sort_values("date")
         .head(limit)
@@ -99,7 +121,6 @@ def query_kpi_data(source, date_start, date_end, metrics, dimensions=None, agg="
         "aggregates": aggregates,
         "preview": preview,
     }
-
 
 def compute_kpi_stats(metric, baseline_value, current_value):
     """
@@ -170,14 +191,14 @@ TOOL_DEFINITIONS = [
                         "type": "object",
                         "description": (
                             f"Filter by dimension columns. "
-                            f"Available dimensions: {DIMENSION_KEYS}. "
+                            f"Available dimensions: {_DIMENSION_KEYS}. "
                             f"Example: {{\"region\": \"West\", \"device_type\": \"Mobile\"}}"
                         ),
                     },
                     "metrics": {
                         "type": "array",
-                        "items": {"type": "string", "enum": METRIC_KEYS},
-                        "description": f"Which metrics to return. Available: {METRIC_KEYS}",
+                        "items": {"type": "string", "enum": _METRIC_KEYS},
+                        "description": f"Which metrics to return. Available: {_METRIC_KEYS}",
                     },
                     "agg": {
                         "type": "string",
