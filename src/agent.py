@@ -54,6 +54,17 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Which model to use — you can change this
 MODEL = "gpt-4o-mini"
 
+selected_metrics = st.session_state.get("perf_metrics", [])
+selected_groups = st.session_state.get("group_cols", [])
+
+anomaly_query = (
+    f"Analyze the KPI dataset. The anomaly appears to start around {anomaly_date}. "
+    f"Focus on these performance metrics if relevant: {selected_metrics}. "
+    f"Use these grouping columns if relevant: {selected_groups}. "
+    f"Identify which metrics and segments are most affected. "
+    f"Use the available tools to query the data and provide a structured finding."
+)
+
 # ===========================================================================
 # MEMORY / STATE
 # ==========================================================================
