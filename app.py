@@ -331,7 +331,6 @@ if not os.environ.get("OPENAI_API_KEY"):
 try:
     from src.data_loader import load_data
     from src.agent import run_agent
-    from src.prompts import REACT_AGENT_SYSTEM_PROMPT
     from src.multimodal import KPIChartGenerator, MultimodalAnalyzer, CrossModalChecker
     from src.rag_pipeline import RAGPipeline
     from src.prompts import REACT_AGENT_SYSTEM_PROMPT
@@ -576,7 +575,6 @@ with tab3:
     if not run_vision:
         st.info("Vision analysis is disabled. Enable it in the sidebar.")
     else:
-    else:
         analyzer = MultimodalAnalyzer()
         checker = CrossModalChecker()
 
@@ -634,12 +632,12 @@ with tab3:
         with col_l:
             st.markdown("##### 👁️ Vision model findings")
             fields = [
-                ("anomaly_detected",  "Anomaly detected?"),
-                ("anomaly_date",      "Detected date"),
-                ("magnitude",         "Magnitude"),
+                ("anomaly_detected", "Anomaly detected?"),
+                ("anomaly_date", "Detected date"),
+                ("magnitude", "Magnitude"),
                 ("affected_segments", "Affected segments"),
-                ("trend_before",      "Trend before"),
-                ("trend_after",       "Trend after"),
+                ("trend_before", "Trend before"),
+                ("trend_after", "Trend after"),
             ]
             for key, label in fields:
                 val = vis.get(key, "—")
@@ -653,7 +651,8 @@ with tab3:
                 badge_cls = f"badge-{label.lower()}"
                 st.markdown(
                     f"Consistency: <span class='{badge_cls}'>{label} ({score:.0%})</span>",
-                    unsafe_allow_html=True)
+                    unsafe_allow_html=True
+                )
                 st.markdown(f"_{consistency.get('explanation', '')}_")
 
                 if consistency.get("matching"):
@@ -670,7 +669,7 @@ with tab3:
 
         st.markdown("---")
         st.markdown("##### Upload your own dashboard screenshot")
-        uploaded_img = st.file_uploader("Upload a dashboard image", type=["png","jpg","jpeg"])
+        uploaded_img = st.file_uploader("Upload a dashboard image", type=["png", "jpg", "jpeg"])
         if uploaded_img:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp.write(uploaded_img.read())
@@ -681,7 +680,6 @@ with tab3:
                     desc = analyzer.analyze_dashboard_screenshot(tmp_path)
                 st.markdown("**Analysis:**")
                 st.markdown(f"<div class='rag-box'>{desc}</div>", unsafe_allow_html=True)
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Data Explorer
