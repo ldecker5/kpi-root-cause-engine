@@ -55,13 +55,7 @@ def infer_date_column(df: pd.DataFrame, preferred_date_col: str = None):
 
     return None
 
-def load_data(path=None):
-    """
-    Load the CSV file and return:
-    - df: the DataFrame with 'date' parsed as datetime
-    - dimension_keys: list of categorical columns (e.g., region, device_type)
-    - metric_keys: list of numeric columns (e.g., revenue, orders)
-    """
+def load_data(path=None, preferred_date_col=None):
     if path is None:
         path = DATA_PATH
 
@@ -99,7 +93,6 @@ def load_data(path=None):
         "column_mapping": rename_map,
         "resolved_date_column": date_col,
     }
-
 
 # ---------------------------------------------------------------------------
 # If you run this file directly, it prints a summary of the dataset
