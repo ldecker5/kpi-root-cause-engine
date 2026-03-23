@@ -300,15 +300,25 @@ with tab1:
                     f"{anomaly_date}. Identify which metrics and segments are most affected. "
                     f"Use the available tools to query the data and provide a structured finding."
                 )
-                agent_result = run_agent(anomaly_query)
+                agent_result = run_agent(
+                    system_prompt=REACT_AGENT_SYSTEM_PROMPT,
+                    user_prompt=anomaly_query,
+                    debug=False,
+                    return_state=True,
+                )
                 st.session_state["agent_result"] = agent_result
             except Exception as e:
                 st.session_state["agent_result"] = f"Agent error: {e}"
 
     result = st.session_state.get("agent_result", "")
     if result:
-        st.markdown(f"<div class='rag-box'>{result}</div>", unsafe_allow_html=True)
-
+        st.markdown(
+            f"<div class='rag-box'>{result.get('final_answer', '')}</div>",
+            unsafe_allow_html=True
+        )
+    
+        with st.expander("ReAct Memory / State"):
+            st.json(result.get("state", {}))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — RAG Root Cause
