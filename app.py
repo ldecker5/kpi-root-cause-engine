@@ -252,12 +252,13 @@ with st.sidebar:
         inferred_date = infer_date_column(preview_df)
 
         st.markdown("---")
-        st.markdown("### 🧭 Column Mapping")
+        st.markdown("### 🧭 Column Selection")
 
-        date_options = list(preview_df.columns)
-        if len(date_options) > 0:
-            default_date_idx = date_options.index(inferred_date) if inferred_date in date_options else 0
-            selected_date_col = st.selectbox("Date column", date_options, index=default_date_idx)
+        all_cols = list(preview_df.columns)
+
+        if len(all_cols) > 0:
+            default_date_idx = all_cols.index(inferred_date) if inferred_date in all_cols else 0
+            selected_date_col = st.selectbox("Date column", all_cols, index=default_date_idx)
         else:
             selected_date_col = None
 
@@ -269,19 +270,29 @@ with st.sidebar:
 
             set_active_dataframe(df)
 
-            default_perf = [c for c in ["revenue", "orders", "conversion_rate", "marketing_spend"] if c in metric_keys]
+            selected_analysis_columns = st.multiselect(
+                "Columns to use in analysis",
+                options=[c for c in df.columns if c != "date"],
+                default=[c for c in df.columns if c != "date"]
+            )
+
+            allowed_metric_options = [c for c in metric_keys if c in selected_analysis_columns]
+            allowed_group_options = [c for c in dimension_keys if c in selected_analysis_columns]
+
+            default_perf = [c for c in ["revenue", "orders", "conversion_rate", "marketing_spend"] if c in allowed_metric_options]
             selected_metrics = st.multiselect(
-                "Performance metrics to analyze",
-                options=metric_keys,
-                default=default_perf or metric_keys[: min(3, len(metric_keys))]
+                "Performance metrics",
+                options=allowed_metric_options,
+                default=default_perf or allowed_metric_options[:min(3, len(allowed_metric_options))]
             )
 
             selected_groups = st.multiselect(
                 "Grouping / segment columns",
-                options=dimension_keys,
-                default=[c for c in ["region", "device_type", "product_category"] if c in dimension_keys]
+                options=allowed_group_options,
+                default=[c for c in ["region", "device_type", "product_category"] if c in allowed_group_options]
             )
 
+            st.session_state["selected_analysis_columns"] = selected_analysis_columns
             st.session_state["selected_metrics"] = selected_metrics
             st.session_state["selected_groups"] = selected_groups
             st.session_state["resolved_dimension_keys"] = dimension_keys
@@ -424,6 +435,7 @@ with tab1:
                     )
                 except Exception as e:
                     st.warning(f"Could not generate comparison chart: {e}")
+                  
     # Tool-calling agent
     st.markdown("---")
     st.markdown("##### 🤖 Agent tool-calling output")
@@ -564,6 +576,7 @@ with tab3:
     if not run_vision:
         st.info("Vision analysis is disabled. Enable it in the sidebar.")
     else:
+    else:
         analyzer = MultimodalAnalyzer()
         checker = CrossModalChecker()
 
@@ -680,21 +693,25 @@ with tab4:
     # Filters
     dimension_keys = st.session_state.get("resolved_dimension_keys", [])
     metric_keys = st.session_state.get("resolved_metric_keys", [])
+    selected_analysis_columns = st.session_state.get("selected_analysis_columns", [])
+
+    allowed_dimension_keys = [c for c in dimension_keys if c in selected_analysis_columns]
+    allowed_metric_keys = [c for c in metric_keys if c in selected_analysis_columns]
 
     filters = {}
     filter_cols = st.columns(3)
 
-    for i, col_name in enumerate(dimension_keys[:3]):
+    for i, col_name in enumerate(allowed_dimension_keys[:3]):
         opts = ["All"] + sorted(df[col_name].dropna().astype(str).unique().tolist())
         sel = filter_cols[i].selectbox(col_name.replace("_", " ").title(), opts)
         if sel != "All":
             filters[col_name] = sel
 
-    if len(metric_keys) == 0:
+    if len(allowed_metric_keys) == 0:
         st.info("No numeric metrics available to summarize.")
         metric_view = None
     else:
-        metric_view = st.selectbox("Metric to summarize", metric_keys)
+        metric_view = st.selectbox("Metric to summarize", allowed_metric_keys)
 
     fdf = df.copy()
     for col_name, val in filters.items():
