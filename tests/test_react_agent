@@ -1,0 +1,82 @@
+"""
+test_react_agent.py
+-------------------
+Milestone 10: ReAct agent tests
+
+Tests:
+1. Multi-step KPI investigation
+2. KPI + retrieval context
+3. Math-only task
+4. State tracking / memory
+"""
+
+from src.agent import run_react_agent
+from src.prompts import REACT_AGENT_SYSTEM_PROMPT
+
+
+TEST_SCENARIOS = [
+    {
+        "id": "investigate_revenue_drop",
+        "prompt": (
+            "Revenue appears to have dropped around April 20, 2024. "
+            "Investigate what caused this. Check different regions and device types."
+        ),
+    },
+    {
+        "id": "stable_aov_question",
+        "prompt": (
+            "If average order value is stable but revenue drops, what should we check? "
+            "Use data and business context."
+        ),
+    },
+    {
+        "id": "math_only",
+        "prompt": (
+            "Revenue went from 125000 to 108000. What is the exact percent change?"
+        ),
+    },
+    {
+        "id": "mobile_vs_desktop",
+        "prompt": (
+            "Did mobile conversion drop more than desktop conversion after April 20 compared to before?"
+        ),
+    },
+]
+
+
+def run_tests():
+    print("=" * 70)
+    print("MILESTONE 10 — REACT AGENT TESTS")
+    print("=" * 70)
+
+    for scenario in TEST_SCENARIOS:
+        print(f"\n--- {scenario['id']} ---")
+        result = run_react_agent(
+            user_prompt=scenario["prompt"],
+            system_prompt=REACT_AGENT_SYSTEM_PROMPT,
+            debug=False,
+            return_state=True,
+        )
+
+        state = result["state"]
+
+        print("Final answer preview:")
+        print(result["final_answer"][:500])
+        print("\nMemory checks:")
+        print(f"- Thoughts recorded: {len(state['thoughts'])}")
+        print(f"- Actions recorded: {len(state['actions'])}")
+        print(f"- Observations recorded: {len(state['observations'])}")
+        print(f"- Completed steps: {state['completed_steps']}")
+
+        passed = (
+            len(state["thoughts"]) > 0 and
+            len(state["actions"]) > 0 and
+            len(state["observations"]) > 0 and
+            bool(result["final_answer"])
+        )
+
+        print("PASS" if passed else "FAIL")
+
+
+if __name__ == "__main__":
+    run_tests()
