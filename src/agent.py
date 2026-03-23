@@ -46,6 +46,7 @@ from src.tools import TOOL_DEFINITIONS, TOOL_IMPLEMENTATIONS
 from src.rag_pipeline import RAGPipeline
 
 import streamlit as st
+from src.agent import run_agent
 
 # ---------------------------------------------------------------------------
 # Load API key from .env file
