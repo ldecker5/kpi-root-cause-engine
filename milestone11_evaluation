@@ -10,7 +10,8 @@ from src.agent import run_agent
 from src.prompts import REACT_AGENT_SYSTEM_PROMPT
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("REDACTED_OPENAI_KEY
+"))
 
 #Human Evaluation 
 
