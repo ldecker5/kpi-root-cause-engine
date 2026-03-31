@@ -6,6 +6,7 @@ from src.agent import run_agent
 from src.prompts import REACT_AGENT_SYSTEM_PROMPT
 from src.rag_pipeline import RAGPipeline, DEFAULT_TEST_SET
 
+#Human Evaluation 
 
 TEST_SCENARIOS = [
     {
@@ -67,22 +68,42 @@ def faithfulness_score(support_obj, final_text):
 
 
 def evaluate_retrieval():
-    rag = RAGPipeline()
-    rag.build_or_load()
-    sim = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=False)
-    mmr = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=True)
-    return {"similarity": sim, "mmr": mmr}
-
+    try:
+        rag = RAGPipeline()
+        rag.build_or_load()
+        sim = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=False)
+        mmr = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=True)
+        return {"similarity": sim, "mmr": mmr, "skipped": False}
+    except FileNotFoundError as e:
+        print(f"[SKIP] Retrieval evaluation skipped: {e}")
+        return {
+            "similarity": None,
+            "mmr": None,
+            "skipped": True,
+            "reason": str(e),
+        }
 
 def evaluate_generation_and_agent():
     rag = RAGPipeline()
-    rag.build_or_load()
+
+    rag_available = True
+    try:
+        rag.build_or_load()
+    except FileNotFoundError as e:
+        print(f"[SKIP] RAG generation unavailable: {e}")
+        rag_available = False
 
     rows = []
 
     for case in TEST_SCENARIOS:
-        baseline = rag.generate_baseline_response(case["query"])
-        rag_result = rag.generate_rag_response(case["query"], k=5)
+        baseline = ""
+        rag_result = {"response": "", "context": "", "retrieved_docs": []}
+
+        if rag_available:
+            baseline = rag.generate_baseline_response(case["query"])
+            rag_result = rag.generate_rag_response(case["query"], k=5)
+        else:
+            baseline = "RAG knowledge base unavailable; baseline-only evaluation mode."
 
         agent_result = run_agent(
             system_prompt=REACT_AGENT_SYSTEM_PROMPT,
@@ -92,14 +113,14 @@ def evaluate_generation_and_agent():
         )
 
         baseline_rel = keyword_score(baseline, case["expected_keywords"])
-        rag_rel = keyword_score(rag_result["response"], case["expected_keywords"])
+        rag_rel = keyword_score(rag_result["response"], case["expected_keywords"]) if rag_available else None
         agent_rel = keyword_score(agent_result["final_answer"], case["expected_keywords"])
 
         baseline_coh = coherence_score(baseline)
-        rag_coh = coherence_score(rag_result["response"])
+        rag_coh = coherence_score(rag_result["response"]) if rag_available else None
         agent_coh = coherence_score(agent_result["final_answer"])
 
-        rag_faith = faithfulness_score(rag_result["context"], rag_result["response"])
+        rag_faith = faithfulness_score(rag_result["context"], rag_result["response"]) if rag_available else None
         agent_faith = faithfulness_score(agent_result["state"], agent_result["final_answer"])
 
         agent_actions = len(agent_result["state"]["actions"])
@@ -120,11 +141,12 @@ def evaluate_generation_and_agent():
             "agent_actions": agent_actions,
             "agent_observations": agent_observations,
             "agent_task_complete": agent_task_complete,
-            "rag_preferred_over_baseline": 1 if (rag_rel + rag_coh + rag_faith) > (baseline_rel + baseline_coh) else 0,
+            "rag_preferred_over_baseline": None if not rag_available else (
+                1 if (rag_rel + rag_coh + rag_faith) > (baseline_rel + baseline_coh) else 0
+            ),
         })
 
     return rows
-
 
 def save_csv(rows, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -138,14 +160,16 @@ def save_summary(rows, retrieval, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     def avg(key):
-        vals = [r[key] for r in rows]
-        return round(sum(vals) / len(vals), 4) if vals else 0.0
+        vals = [r[key] for r in rows if r[key] is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
 
     summary = {
-        "retrieval_similarity_precision_at_5": retrieval["similarity"]["avg_precision"],
-        "retrieval_similarity_recall_at_5": retrieval["similarity"]["avg_recall"],
-        "retrieval_mmr_precision_at_5": retrieval["mmr"]["avg_precision"],
-        "retrieval_mmr_recall_at_5": retrieval["mmr"]["avg_recall"],
+        "retrieval_skipped": retrieval.get("skipped", False),
+        "retrieval_reason": retrieval.get("reason"),
+        "retrieval_similarity_precision_at_5": None if retrieval.get("similarity") is None else retrieval["similarity"]["avg_precision"],
+        "retrieval_similarity_recall_at_5": None if retrieval.get("similarity") is None else retrieval["similarity"]["avg_recall"],
+        "retrieval_mmr_precision_at_5": None if retrieval.get("mmr") is None else retrieval["mmr"]["avg_precision"],
+        "retrieval_mmr_recall_at_5": None if retrieval.get("mmr") is None else retrieval["mmr"]["avg_recall"],
         "avg_baseline_relevance": avg("baseline_relevance"),
         "avg_rag_relevance": avg("rag_relevance"),
         "avg_agent_relevance": avg("agent_relevance"),
