@@ -1,41 +1,16 @@
 import csv
 import json
+import os
 from pathlib import Path
 
-from openai import OpenAI
 from dotenv import load_dotenv
-import os
+from openai import OpenAI
 
 from src.agent import run_agent
 from src.prompts import REACT_AGENT_SYSTEM_PROMPT
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-#Human Evaluation 
-
-def generate_baseline_response(query):
-    prompt = f"""You are a KPI analysis assistant.
-
-Answer the user's question directly using general reasoning only.
-Do not use retrieval or tools.
-Be clear and structured.
-
-User query:
-{query}
-
-Output format:
-Summary
-Evidence
-Plausible explanations
-Recommendations
-"""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=700,
-    )
-    return response.choices[0].message.content
 
 TEST_SCENARIOS = [
     {
@@ -71,6 +46,30 @@ TEST_SCENARIOS = [
 ]
 
 
+def generate_baseline_response(query):
+    prompt = f"""You are a KPI analysis assistant.
+
+Answer the user's question directly using general reasoning only.
+Do not use tools or retrieval.
+Be clear and structured.
+
+User query:
+{query}
+
+Output format:
+Summary
+Evidence
+Plausible explanations
+Recommendations
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=700,
+    )
+    return response.choices[0].message.content
+
+
 def keyword_score(text, expected_keywords):
     if not expected_keywords:
         return 1.0
@@ -102,20 +101,21 @@ def evaluate_retrieval():
         "reason": "RAG not used for this Milestone 11 evaluation. Comparison focuses on baseline LLM vs. no-RAG ReAct agent."
     }
 
+
 def evaluate_generation_and_agent():
     rows = []
 
     for case in TEST_SCENARIOS:
         baseline = ""
+        baseline_error = None
         agent_result = None
         agent_error = None
-        baseline_error = None
 
         try:
             baseline = generate_baseline_response(case["query"])
         except Exception as e:
             baseline_error = str(e)
-            baseline = ""
+            print(f"[SKIP] Baseline evaluation unavailable for {case['id']}: {baseline_error}")
 
         try:
             agent_result = run_agent(
@@ -129,31 +129,25 @@ def evaluate_generation_and_agent():
             print(f"[SKIP] Agent evaluation unavailable for {case['id']}: {agent_error}")
 
         baseline_rel = keyword_score(baseline, case["expected_keywords"]) if baseline else None
-        agent_rel = (
-            keyword_score(agent_result["final_answer"], case["expected_keywords"])
-            if agent_result is not None else None
-        )
+        agent_rel = keyword_score(agent_result["final_answer"], case["expected_keywords"]) if agent_result else None
 
         baseline_coh = coherence_score(baseline) if baseline else None
-        agent_coh = (
-            coherence_score(agent_result["final_answer"])
-            if agent_result is not None else None
-        )
+        agent_coh = coherence_score(agent_result["final_answer"]) if agent_result else None
 
-        baseline_faith = None  # no tools, so faithfulness is weaker / not directly grounded
-        agent_faith = (
-            faithfulness_score(agent_result["state"], agent_result["final_answer"])
-            if agent_result is not None else None
-        )
+        baseline_faith = None
+        agent_faith = faithfulness_score(agent_result["state"], agent_result["final_answer"]) if agent_result else None
 
-        agent_actions = len(agent_result["state"]["actions"]) if agent_result is not None else None
-        agent_observations = len(agent_result["state"]["observations"]) if agent_result is not None else None
+        agent_actions = len(agent_result["state"]["actions"]) if agent_result else None
+        agent_observations = len(agent_result["state"]["observations"]) if agent_result else None
         agent_task_complete = (
             1 if agent_result["final_answer"] and "stopped" not in agent_result["final_answer"].lower() else 0
-        ) if agent_result is not None else None
+        ) if agent_result else None
 
         agent_preferred_over_baseline = None
-        if baseline_rel is not None and baseline_coh is not None and agent_rel is not None and agent_coh is not None and agent_faith is not None:
+        if (
+            baseline_rel is not None and baseline_coh is not None
+            and agent_rel is not None and agent_coh is not None and agent_faith is not None
+        ):
             agent_preferred_over_baseline = 1 if (agent_rel + agent_coh + agent_faith) > (baseline_rel + baseline_coh) else 0
 
         rows.append({
@@ -174,6 +168,7 @@ def evaluate_generation_and_agent():
         })
 
     return rows
+
 
 def save_csv(rows, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -212,11 +207,23 @@ def save_summary(rows, retrieval, path):
     with open(path, "w") as f:
         json.dump(summary, f, indent=2)
 
+
 if __name__ == "__main__":
     retrieval = evaluate_retrieval()
     rows = evaluate_generation_and_agent()
-    save_csv(rows, "evaluation/results/milestone11_metrics.csv")
-    save_summary(rows, retrieval, "evaluation/results/milestone11_summary.json")
+
+    metrics_path = "evaluation/results/milestone11_metrics.csv"
+    summary_path = "evaluation/results/milestone11_summary.json"
+
+    save_csv(rows, metrics_path)
+    save_summary(rows, retrieval, summary_path)
 
     print("Milestone 11 evaluation complete.")
-    print(json.dumps(retrieval, indent=2))
+    print(f"Metrics saved to: {metrics_path}")
+    print(f"Summary saved to: {summary_path}")
+
+    with open(summary_path, "r") as f:
+        summary = json.load(f)
+
+    print("\n=== SUMMARY ===")
+    print(json.dumps(summary, indent=2))
