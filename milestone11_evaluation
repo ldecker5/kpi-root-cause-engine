@@ -3,59 +3,78 @@ import json
 from pathlib import Path
 
 from src.agent import run_agent
-from src.rag_pipeline import RAGPipeline
 from src.prompts import REACT_AGENT_SYSTEM_PROMPT
+from src.rag_pipeline import RAGPipeline, DEFAULT_TEST_SET
+
 
 TEST_SCENARIOS = [
     {
         "id": "revenue_drop_mobile",
-        "query": "Revenue dropped after April 20. Identify the likely drivers.",
+        "query": "Revenue dropped after April 20, 2024. Investigate likely drivers across metrics and segments.",
         "expected_keywords": ["revenue", "conversion", "marketing"],
+        "category": "standard",
     },
     {
         "id": "stable_aov",
         "query": "If average order value is stable but revenue drops, what should we check?",
         "expected_keywords": ["traffic", "conversion", "avg_order_value"],
+        "category": "standard",
     },
     {
-        "id": "west_region",
+        "id": "west_region_marketing",
         "query": "What explains the revenue decline in the West region?",
         "expected_keywords": ["west", "marketing", "revenue"],
+        "category": "standard",
     },
     {
-        "id": "edge_missing_context",
+        "id": "vague_prompt",
         "query": "How are things looking?",
         "expected_keywords": [],
+        "category": "edge_case",
+    },
+    {
+        "id": "missing_metric",
+        "query": "Show me vibe_score and satisfaction_rating for April 2024.",
+        "expected_keywords": [],
+        "category": "failure_mode",
     },
 ]
 
-def simple_keyword_relevance_score(text, expected_keywords):
+
+def keyword_score(text, expected_keywords):
     if not expected_keywords:
         return 1.0
-    hits = sum(1 for kw in expected_keywords if kw.lower() in text.lower())
-    return hits / len(expected_keywords)
+    text = text.lower()
+    hits = sum(1 for kw in expected_keywords if kw.lower() in text)
+    return round(hits / len(expected_keywords), 4)
 
-def simple_coherence_score(text):
-    required_sections = ["summary", "evidence", "recommend", "explanation"]
-    hits = sum(1 for s in required_sections if s in text.lower())
-    return hits / len(required_sections)
 
-def simple_faithfulness_score(agent_state_or_rag_context, final_text):
-    # simple placeholder heuristic
-    support_text = json.dumps(agent_state_or_rag_context).lower()
-    keywords = [w for w in final_text.lower().split() if len(w) > 5][:20]
-    if not keywords:
+def coherence_score(text):
+    text = text.lower()
+    sections = ["summary", "evidence", "recommend", "explanation"]
+    hits = sum(1 for s in sections if s in text)
+    return round(hits / len(sections), 4)
+
+
+def faithfulness_score(support_obj, final_text):
+    support_text = json.dumps(support_obj).lower()
+    tokens = [w.strip(".,:;()[]") for w in final_text.lower().split()]
+    tokens = [w for w in tokens if len(w) > 5][:25]
+    if not tokens:
         return 0.0
-    hits = sum(1 for w in keywords if w in support_text)
-    return min(1.0, hits / max(1, len(keywords)))
+    hits = sum(1 for w in tokens if w in support_text)
+    return round(min(1.0, hits / len(tokens)), 4)
 
-def evaluate_rag():
+
+def evaluate_retrieval():
     rag = RAGPipeline()
     rag.build_or_load()
-    retrieval = rag.evaluate_retrieval(rag.DEFAULT_TEST_SET if hasattr(rag, "DEFAULT_TEST_SET") else [], k=5)
-    return retrieval
+    sim = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=False)
+    mmr = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=True)
+    return {"similarity": sim, "mmr": mmr}
 
-def evaluate_agent_and_generation():
+
+def evaluate_generation_and_agent():
     rag = RAGPipeline()
     rag.build_or_load()
 
@@ -72,19 +91,24 @@ def evaluate_agent_and_generation():
             return_state=True,
         )
 
-        baseline_rel = simple_keyword_relevance_score(baseline, case["expected_keywords"])
-        rag_rel = simple_keyword_relevance_score(rag_result["response"], case["expected_keywords"])
-        agent_rel = simple_keyword_relevance_score(agent_result["final_answer"], case["expected_keywords"])
+        baseline_rel = keyword_score(baseline, case["expected_keywords"])
+        rag_rel = keyword_score(rag_result["response"], case["expected_keywords"])
+        agent_rel = keyword_score(agent_result["final_answer"], case["expected_keywords"])
 
-        baseline_coh = simple_coherence_score(baseline)
-        rag_coh = simple_coherence_score(rag_result["response"])
-        agent_coh = simple_coherence_score(agent_result["final_answer"])
+        baseline_coh = coherence_score(baseline)
+        rag_coh = coherence_score(rag_result["response"])
+        agent_coh = coherence_score(agent_result["final_answer"])
 
-        rag_faith = simple_faithfulness_score(rag_result["context"], rag_result["response"])
-        agent_faith = simple_faithfulness_score(agent_result["state"], agent_result["final_answer"])
+        rag_faith = faithfulness_score(rag_result["context"], rag_result["response"])
+        agent_faith = faithfulness_score(agent_result["state"], agent_result["final_answer"])
+
+        agent_actions = len(agent_result["state"]["actions"])
+        agent_observations = len(agent_result["state"]["observations"])
+        agent_task_complete = 1 if agent_result["final_answer"] and "stopped" not in agent_result["final_answer"].lower() else 0
 
         rows.append({
             "scenario_id": case["id"],
+            "category": case["category"],
             "baseline_relevance": baseline_rel,
             "rag_relevance": rag_rel,
             "agent_relevance": agent_rel,
@@ -93,20 +117,60 @@ def evaluate_agent_and_generation():
             "agent_coherence": agent_coh,
             "rag_faithfulness": rag_faith,
             "agent_faithfulness": agent_faith,
-            "agent_actions": len(agent_result["state"]["actions"]),
-            "agent_observations": len(agent_result["state"]["observations"]),
+            "agent_actions": agent_actions,
+            "agent_observations": agent_observations,
+            "agent_task_complete": agent_task_complete,
+            "rag_preferred_over_baseline": 1 if (rag_rel + rag_coh + rag_faith) > (baseline_rel + baseline_coh) else 0,
         })
 
     return rows
 
-def save_results(rows, outpath="evaluation/results/milestone11_results.csv"):
-    Path(outpath).parent.mkdir(parents=True, exist_ok=True)
-    with open(outpath, "w", newline="") as f:
+
+def save_csv(rows, path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
+
+def save_summary(rows, retrieval, path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+    def avg(key):
+        vals = [r[key] for r in rows]
+        return round(sum(vals) / len(vals), 4) if vals else 0.0
+
+    summary = {
+        "retrieval_similarity_precision_at_5": retrieval["similarity"]["avg_precision"],
+        "retrieval_similarity_recall_at_5": retrieval["similarity"]["avg_recall"],
+        "retrieval_mmr_precision_at_5": retrieval["mmr"]["avg_precision"],
+        "retrieval_mmr_recall_at_5": retrieval["mmr"]["avg_recall"],
+        "avg_baseline_relevance": avg("baseline_relevance"),
+        "avg_rag_relevance": avg("rag_relevance"),
+        "avg_agent_relevance": avg("agent_relevance"),
+        "avg_baseline_coherence": avg("baseline_coherence"),
+        "avg_rag_coherence": avg("rag_coherence"),
+        "avg_agent_coherence": avg("agent_coherence"),
+        "avg_rag_faithfulness": avg("rag_faithfulness"),
+        "avg_agent_faithfulness": avg("agent_faithfulness"),
+        "avg_agent_actions": avg("agent_actions"),
+        "avg_agent_observations": avg("agent_observations"),
+        "agent_task_completion_rate": avg("agent_task_complete"),
+        "rag_win_rate_over_baseline": avg("rag_preferred_over_baseline"),
+        "failure_modes": [r["scenario_id"] for r in rows if r["category"] == "failure_mode"],
+        "edge_cases": [r["scenario_id"] for r in rows if r["category"] == "edge_case"],
+    }
+
+    with open(path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+
 if __name__ == "__main__":
-    rows = evaluate_agent_and_generation()
-    save_results(rows)
-    print("Saved Milestone 11 results.")
+    retrieval = evaluate_retrieval()
+    rows = evaluate_generation_and_agent()
+    save_csv(rows, "evaluation/results/milestone11_metrics.csv")
+    save_summary(rows, retrieval, "evaluation/results/milestone11_summary.json")
+
+    print("Milestone 11 evaluation complete.")
+    print(json.dumps(retrieval, indent=2))
