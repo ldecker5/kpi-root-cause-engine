@@ -7,10 +7,22 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.agent import run_agent
-from src.prompts import REACT_AGENT_SYSTEM_PROMPT
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+NO_RAG_AGENT_SYSTEM_PROMPT = """
+You are a KPI root-cause analysis agent.
+
+Use only the available dataset tools to investigate the question.
+Do not use retrieval or external knowledge.
+Ground claims in tool outputs.
+Final answer format:
+Summary
+Evidence
+Plausible explanations
+Recommendations
+"""
 
 TEST_SCENARIOS = [
     {
@@ -119,7 +131,7 @@ def evaluate_generation_and_agent():
 
         try:
             agent_result = run_agent(
-                system_prompt=REACT_AGENT_SYSTEM_PROMPT,
+                system_prompt=NO_RAG_AGENT_SYSTEM_PROMPT,
                 user_prompt=case["query"],
                 debug=False,
                 return_state=True,
