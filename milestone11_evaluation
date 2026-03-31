@@ -2,11 +2,40 @@ import csv
 import json
 from pathlib import Path
 
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
 from src.agent import run_agent
 from src.prompts import REACT_AGENT_SYSTEM_PROMPT
-from src.rag_pipeline import RAGPipeline, DEFAULT_TEST_SET
+
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 #Human Evaluation 
+
+def generate_baseline_response(query):
+    prompt = f"""You are a KPI analysis assistant.
+
+Answer the user's question directly using general reasoning only.
+Do not use retrieval or tools.
+Be clear and structured.
+
+User query:
+{query}
+
+Output format:
+Summary
+Evidence
+Plausible explanations
+Recommendations
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=700,
+    )
+    return response.choices[0].message.content
 
 TEST_SCENARIOS = [
     {
@@ -68,45 +97,25 @@ def faithfulness_score(support_obj, final_text):
 
 
 def evaluate_retrieval():
-    try:
-        rag = RAGPipeline()
-        rag.build_or_load()
-        sim = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=False)
-        mmr = rag.evaluate_retrieval(DEFAULT_TEST_SET, k=5, use_mmr=True)
-        return {"similarity": sim, "mmr": mmr, "skipped": False}
-    except FileNotFoundError as e:
-        print(f"[SKIP] Retrieval evaluation skipped: {e}")
-        return {
-            "similarity": None,
-            "mmr": None,
-            "skipped": True,
-            "reason": str(e),
-        }
+    return {
+        "skipped": True,
+        "reason": "RAG not used for this Milestone 11 evaluation. Comparison focuses on baseline LLM vs. no-RAG ReAct agent."
+    }
 
 def evaluate_generation_and_agent():
-    rag = RAGPipeline()
-
-    rag_available = True
-    try:
-        rag.build_or_load()
-    except FileNotFoundError as e:
-        print(f"[SKIP] RAG generation unavailable: {e}")
-        rag_available = False
-
     rows = []
 
     for case in TEST_SCENARIOS:
         baseline = ""
-        rag_result = {"response": "", "context": "", "retrieved_docs": []}
-
-        if rag_available:
-            baseline = rag.generate_baseline_response(case["query"])
-            rag_result = rag.generate_rag_response(case["query"], k=5)
-        else:
-            baseline = "RAG knowledge base unavailable; baseline-only evaluation mode."
-
         agent_result = None
         agent_error = None
+        baseline_error = None
+
+        try:
+            baseline = generate_baseline_response(case["query"])
+        except Exception as e:
+            baseline_error = str(e)
+            baseline = ""
 
         try:
             agent_result = run_agent(
@@ -119,57 +128,51 @@ def evaluate_generation_and_agent():
             agent_error = str(e)
             print(f"[SKIP] Agent evaluation unavailable for {case['id']}: {agent_error}")
 
-        baseline_rel = keyword_score(baseline, case["expected_keywords"])
-        rag_rel = keyword_score(rag_result["response"], case["expected_keywords"]) if rag_available else None
+        baseline_rel = keyword_score(baseline, case["expected_keywords"]) if baseline else None
         agent_rel = (
             keyword_score(agent_result["final_answer"], case["expected_keywords"])
             if agent_result is not None else None
         )
 
-        baseline_coh = coherence_score(baseline)
-        rag_coh = coherence_score(rag_result["response"]) if rag_available else None
+        baseline_coh = coherence_score(baseline) if baseline else None
         agent_coh = (
             coherence_score(agent_result["final_answer"])
             if agent_result is not None else None
         )
 
-        rag_faith = faithfulness_score(rag_result["context"], rag_result["response"]) if rag_available else None
+        baseline_faith = None  # no tools, so faithfulness is weaker / not directly grounded
         agent_faith = (
             faithfulness_score(agent_result["state"], agent_result["final_answer"])
             if agent_result is not None else None
         )
 
-        agent_actions = (
-            len(agent_result["state"]["actions"])
-            if agent_result is not None else None
-        )
-        agent_observations = (
-            len(agent_result["state"]["observations"])
-            if agent_result is not None else None
-        )
+        agent_actions = len(agent_result["state"]["actions"]) if agent_result is not None else None
+        agent_observations = len(agent_result["state"]["observations"]) if agent_result is not None else None
         agent_task_complete = (
             1 if agent_result["final_answer"] and "stopped" not in agent_result["final_answer"].lower() else 0
         ) if agent_result is not None else None
+
+        agent_preferred_over_baseline = None
+        if baseline_rel is not None and baseline_coh is not None and agent_rel is not None and agent_coh is not None and agent_faith is not None:
+            agent_preferred_over_baseline = 1 if (agent_rel + agent_coh + agent_faith) > (baseline_rel + baseline_coh) else 0
 
         rows.append({
             "scenario_id": case["id"],
             "category": case["category"],
             "baseline_relevance": baseline_rel,
-            "rag_relevance": rag_rel,
             "agent_relevance": agent_rel,
             "baseline_coherence": baseline_coh,
-            "rag_coherence": rag_coh,
             "agent_coherence": agent_coh,
-            "rag_faithfulness": rag_faith,
+            "baseline_faithfulness": baseline_faith,
             "agent_faithfulness": agent_faith,
             "agent_actions": agent_actions,
             "agent_observations": agent_observations,
             "agent_task_complete": agent_task_complete,
-            "rag_preferred_over_baseline": None if not rag_available else (
-                1 if (rag_rel + rag_coh + rag_faith) > (baseline_rel + baseline_coh) else 0
-            ),
+            "agent_preferred_over_baseline": agent_preferred_over_baseline,
+            "baseline_error": baseline_error,
             "agent_error": agent_error,
         })
+
     return rows
 
 def save_csv(rows, path):
@@ -190,31 +193,24 @@ def save_summary(rows, retrieval, path):
     summary = {
         "retrieval_skipped": retrieval.get("skipped", False),
         "retrieval_reason": retrieval.get("reason"),
-        "retrieval_similarity_precision_at_5": None if retrieval.get("similarity") is None else retrieval["similarity"]["avg_precision"],
-        "retrieval_similarity_recall_at_5": None if retrieval.get("similarity") is None else retrieval["similarity"]["avg_recall"],
-        "retrieval_mmr_precision_at_5": None if retrieval.get("mmr") is None else retrieval["mmr"]["avg_precision"],
-        "retrieval_mmr_recall_at_5": None if retrieval.get("mmr") is None else retrieval["mmr"]["avg_recall"],
         "avg_baseline_relevance": avg("baseline_relevance"),
-        "avg_rag_relevance": avg("rag_relevance"),
         "avg_agent_relevance": avg("agent_relevance"),
         "avg_baseline_coherence": avg("baseline_coherence"),
-        "avg_rag_coherence": avg("rag_coherence"),
         "avg_agent_coherence": avg("agent_coherence"),
-        "avg_rag_faithfulness": avg("rag_faithfulness"),
+        "avg_baseline_faithfulness": avg("baseline_faithfulness"),
         "avg_agent_faithfulness": avg("agent_faithfulness"),
         "avg_agent_actions": avg("agent_actions"),
         "avg_agent_observations": avg("agent_observations"),
         "agent_task_completion_rate": avg("agent_task_complete"),
-        "rag_win_rate_over_baseline": avg("rag_preferred_over_baseline"),
+        "agent_win_rate_over_baseline": avg("agent_preferred_over_baseline"),
         "failure_modes": [r["scenario_id"] for r in rows if r["category"] == "failure_mode"],
         "edge_cases": [r["scenario_id"] for r in rows if r["category"] == "edge_case"],
-        "agent_eval_skipped_cases": [r["scenario_id"] for r in rows if r["agent_error"] is not None],
+        "baseline_eval_errors": {r["scenario_id"]: r["baseline_error"] for r in rows if r["baseline_error"] is not None},
         "agent_eval_errors": {r["scenario_id"]: r["agent_error"] for r in rows if r["agent_error"] is not None},
     }
 
     with open(path, "w") as f:
         json.dump(summary, f, indent=2)
-
 
 if __name__ == "__main__":
     retrieval = evaluate_retrieval()
