@@ -1,13 +1,14 @@
 """
 app.py
 ------
-MILESTONE 9: MVP — KPI Root Cause Analysis Engine
+MILESTONE 12: Security Hardening — KPI Root Cause Analysis Engine
 Streamlit interface that wires together:
   • Data loading (sample CSV or upload)
   • Anomaly detection via tool-calling agent
   • RAG-powered root cause explanation
   • Chart generation + GPT-4o-mini vision analysis
   • Cross-modal consistency check
+  • Security: input validation, output filtering, rate limiting (Milestone 12)
 
 Run:
     streamlit run app.py
@@ -23,6 +24,14 @@ import pandas as pd
 
 from src.data_loader import load_data, clean_column_name, normalize_columns, infer_date_column
 from src.tools import set_active_dataframe
+from src.security import (
+    validate_input,
+    sanitize_input,
+    filter_output,
+    check_api_key_safety,
+    rate_limiter,
+    get_session_id,
+)
 
 def load_data_from_df(raw_df, selected_date_col):
     df, rename_map = normalize_columns(raw_df.copy())
@@ -86,7 +95,7 @@ def build_dynamic_anomaly_summary(df, anomaly_ts, selected_metrics, selected_gro
                     lines.append(f"    [{grp}={val}] {bd:.3g} → {ad:.3g} ({p2:+.1f}%)")
 
     return "\n".join(lines)
-  
+
 # ── Make src/ importable ──────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -157,6 +166,7 @@ st.markdown("""
     white-space: pre-wrap;
     font-size: 0.9rem;
     line-height: 1.6;
+    color: #1e293b;
   }
   .baseline-box {
     background: #fafafa;
@@ -166,6 +176,25 @@ st.markdown("""
     white-space: pre-wrap;
     font-size: 0.9rem;
     line-height: 1.6;
+    color: #1e293b;
+  }
+
+  /* Security alert boxes */
+  .security-blocked {
+    background: #fef2f2;
+    border-left: 3px solid #ef4444;
+    padding: 0.8rem 1.25rem;
+    border-radius: 0 0.4rem 0.4rem 0;
+    font-size: 0.9rem;
+    color: #1e293b;
+  }
+  .security-passed {
+    background: #f0fdf4;
+    border-left: 3px solid #22c55e;
+    padding: 0.8rem 1.25rem;
+    border-radius: 0 0.4rem 0.4rem 0;
+    font-size: 0.9rem;
+    color: #1e293b;
   }
 
   /* Consistency badge */
@@ -199,7 +228,7 @@ st.markdown("""
   <span style="font-size:2rem">📊</span>
   <div>
     <h1>KPI Root Cause Analysis Engine</h1>
-    <p>Anomaly detection · RAG-powered explanations · Vision analysis · Tool calling</p>
+    <p>Anomaly detection · RAG-powered explanations · Vision analysis · Tool calling · 🔒 Security hardened</p>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -217,8 +246,15 @@ with st.sidebar:
         placeholder="sk-...",
         help="Your key is never stored."
     )
+
+    # ── SECURITY: Validate API key format ─────────────────────────────────────
     if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+        key_ok, key_msg = check_api_key_safety(api_key)
+        if key_ok:
+            os.environ["OPENAI_API_KEY"] = api_key
+            st.markdown("🔒 <small style='color:#4ade80'>Key format valid</small>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"⚠️ <small style='color:#f87171'>{key_msg}</small>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### 📁 Data Source")
@@ -314,7 +350,24 @@ with st.sidebar:
     run_vision = st.checkbox("Enable vision analysis", value=True)
 
     st.markdown("---")
-    run_btn = st.button("🚀 Run Full Analysis", use_container_width=True)
+
+    # ── SECURITY: Rate-limit the Run button ───────────────────────────────────
+    session_id = get_session_id(st.session_state)
+    run_clicked = st.button("🚀 Run Full Analysis", use_container_width=True)
+    if run_clicked:
+        rate_ok, rate_msg = rate_limiter.check(session_id)
+    else:
+        rate_ok, rate_msg = True, "ok"
+    run_btn = run_clicked and rate_ok
+
+    if run_clicked and not rate_ok:
+        st.warning(rate_msg)
+
+    remaining = rate_limiter.remaining(session_id)
+    st.markdown(
+        f"<small style='color:#94a3b8'>🔒 {remaining} analysis runs remaining this minute</small>",
+        unsafe_allow_html=True
+    )
 
 
 # ── Guard: need data + API key ─────────────────────────────────────────────────
@@ -434,7 +487,7 @@ with tab1:
                     )
                 except Exception as e:
                     st.warning(f"Could not generate comparison chart: {e}")
-                  
+
     # Tool-calling agent
     st.markdown("---")
     st.markdown("##### 🤖 Agent tool-calling output")
@@ -464,13 +517,22 @@ with tab1:
 
     result = st.session_state.get("agent_result", "")
     if result:
+        raw_answer = result.get("final_answer", "") if isinstance(result, dict) else str(result)
+
+        # ── SECURITY: Filter agent output for sensitive data ───────────────
+        filtered_answer, findings = filter_output(raw_answer)
+        if findings:
+            st.warning(f"🔒 Output filtered — sensitive data redacted: {', '.join(findings)}")
+
         st.markdown(
-            f"<div class='rag-box'>{result.get('final_answer', '')}</div>",
+            f"<div class='rag-box'>{filtered_answer}</div>",
             unsafe_allow_html=True
         )
-    
-        with st.expander("ReAct Memory / State"):
-            st.json(result.get("state", {}))
+
+        if isinstance(result, dict):
+            with st.expander("ReAct Memory / State"):
+                st.json(result.get("state", {}))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — RAG Root Cause
@@ -521,10 +583,12 @@ with tab2:
                     st.session_state["rag_result"]  = rag_result
                     st.session_state["rag_baseline"] = baseline
                     st.session_state["rag_mode"]    = "rag"
+                    st.session_state["rag_pipeline"] = rag
                 else:
                     baseline = rag.generate_baseline_response(anomaly_summary)
                     st.session_state["rag_baseline"] = baseline
                     st.session_state["rag_mode"]    = "baseline"
+                    st.session_state["rag_pipeline"] = rag
             except Exception as e:
                 st.session_state["rag_mode"] = "error"
                 st.session_state["rag_error"] = str(e)
@@ -539,8 +603,13 @@ with tab2:
         with col_a:
             st.markdown("##### 🔵 RAG-augmented response")
             st.caption("Grounded in retrieved knowledge base documents")
-            st.markdown(f"<div class='rag-box'>{rag_result['response']}</div>",
-                        unsafe_allow_html=True)
+
+            # ── SECURITY: Filter RAG output ────────────────────────────────
+            raw_rag = rag_result["response"]
+            filtered_rag, rag_findings = filter_output(raw_rag)
+            if rag_findings:
+                st.warning(f"🔒 Output filtered: {', '.join(rag_findings)}")
+            st.markdown(f"<div class='rag-box'>{filtered_rag}</div>", unsafe_allow_html=True)
 
             st.markdown("**Sources retrieved:**")
             for i, doc in enumerate(rag_result["retrieved_docs"], 1):
@@ -549,20 +618,84 @@ with tab2:
         with col_b:
             st.markdown("##### ⚪ Baseline (no RAG)")
             st.caption("LLM with no retrieval — for comparison")
-            st.markdown(f"<div class='baseline-box'>{baseline}</div>",
-                        unsafe_allow_html=True)
+
+            # ── SECURITY: Filter baseline output ───────────────────────────
+            filtered_baseline, _ = filter_output(baseline)
+            st.markdown(f"<div class='baseline-box'>{filtered_baseline}</div>", unsafe_allow_html=True)
 
     elif mode == "baseline":
         st.info("💡 No PDFs found — running in baseline (no RAG) mode. Upload PDFs in the sidebar to enable RAG.")
         baseline = st.session_state.get("rag_baseline", "")
+
+        # ── SECURITY: Filter baseline output ──────────────────────────────
+        filtered_baseline, _ = filter_output(baseline)
         st.markdown("##### LLM Root Cause Explanation")
-        st.markdown(f"<div class='baseline-box'>{baseline}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='baseline-box'>{filtered_baseline}</div>", unsafe_allow_html=True)
 
     elif mode == "error":
         st.error(f"RAG error: {st.session_state.get('rag_error')}")
 
     else:
         st.info("Click **Run Full Analysis** in the sidebar to generate the root cause explanation.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SECURITY: Free-form follow-up question box
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("##### 💬 Ask a follow-up question")
+    st.caption("Ask anything about the anomaly. Inputs are validated before reaching the LLM.")
+
+    user_question = st.text_input(
+        "Your question",
+        placeholder="e.g. Which region was most affected by the revenue drop?",
+        key="followup_input",
+        label_visibility="collapsed",
+    )
+
+    ask_btn = st.button("Ask", key="ask_followup")
+
+    if ask_btn and user_question:
+        # Step 1: Rate limit check
+        session_id = get_session_id(st.session_state)
+        rate_ok, rate_msg = rate_limiter.check(session_id)
+        if not rate_ok:
+            st.warning(rate_msg)
+        else:
+            # Step 2: Input validation (injection / jailbreak check)
+            is_safe, reason = validate_input(user_question)
+            if not is_safe:
+                st.markdown(
+                    f"<div class='security-blocked'>🚫 <strong>Blocked:</strong> {reason}</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                # Step 3: Sanitize and send to LLM
+                clean_question = sanitize_input(user_question)
+                st.markdown(
+                    f"<div class='security-passed'>✅ <strong>Input validated</strong> — sending to LLM...</div>",
+                    unsafe_allow_html=True
+                )
+
+                rag_pipeline = st.session_state.get("rag_pipeline")
+                if rag_pipeline is None:
+                    st.warning("Run the full analysis first to initialize the RAG pipeline.")
+                else:
+                    with st.spinner("Generating answer..."):
+                        try:
+                            context = f"Dataset anomaly context:\n{anomaly_summary}\n\nUser question: {clean_question}"
+                            followup_response = rag_pipeline.generate_baseline_response(context)
+
+                            # Step 4: Filter output before displaying
+                            filtered_followup, followup_findings = filter_output(followup_response)
+                            if followup_findings:
+                                st.warning(f"🔒 Output filtered: {', '.join(followup_findings)}")
+
+                            st.markdown(
+                                f"<div class='rag-box'>{filtered_followup}</div>",
+                                unsafe_allow_html=True
+                            )
+                        except Exception as e:
+                            st.error(f"Error generating answer: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -678,8 +811,12 @@ with tab3:
             if st.button("Analyze uploaded image"):
                 with st.spinner("Analyzing..."):
                     desc = analyzer.analyze_dashboard_screenshot(tmp_path)
+
+                # ── SECURITY: Filter vision output ─────────────────────────
+                filtered_desc, _ = filter_output(desc)
                 st.markdown("**Analysis:**")
-                st.markdown(f"<div class='rag-box'>{desc}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='rag-box'>{filtered_desc}</div>", unsafe_allow_html=True)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Data Explorer
@@ -732,8 +869,8 @@ with tab4:
 st.markdown("---")
 st.markdown(
     "<p style='text-align:center;color:#94a3b8;font-size:0.78rem'>"
-    "KPI Root Cause Analysis Engine · Milestone 9 MVP · "
-    "Built with Streamlit + OpenAI GPT-4o-mini + LangChain + ChromaDB"
+    "KPI Root Cause Analysis Engine · Milestone 12 · "
+    "Built with Streamlit + OpenAI GPT-4o-mini + LangChain + ChromaDB · 🔒 Security hardened"
     "</p>",
     unsafe_allow_html=True,
 )

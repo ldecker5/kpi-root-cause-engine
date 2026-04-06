@@ -1,6 +1,9 @@
 # API keys — NEVER commit this
 .env
 
+# Security audit logs
+security_audit.log
+
 # Python
 __pycache__/
 *.pyc
