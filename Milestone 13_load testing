@@ -1,0 +1,12 @@
+from locust import HttpUser, task, between
+
+class KPIUser(HttpUser):
+    wait_time = between(2, 5)
+
+    @task(3)
+    def load_home(self):
+        self.client.get("/")
+
+    @task(1)
+    def refresh_home(self):
+        self.client.get("/")
