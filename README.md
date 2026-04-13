@@ -36,3 +36,10 @@ kpi_root_cause_engine/
 5. Create `.env` file with: `OPENAI_API_KEY=sk-your-key-here`
 6. Run: `python main.py`
 ```
+## Streamlit Cloud Deployment
+
+Entrypoint: `app.py`
+
+Required secret:
+```toml
+OPENAI_API_KEY = "sk-your-key-here"
