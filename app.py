@@ -16,7 +16,11 @@ Run:
 
 import os
 import sys
+import json
+import time
+import uuid
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -32,6 +36,14 @@ from src.security import (
     rate_limiter,
     get_session_id,
 )
+
+def app_log(event_type, **payload):
+    record = {
+        "ts": datetime.utcnow().isoformat(),
+        "event": event_type,
+        **payload,
+    }
+    print(json.dumps(record))
 
 def load_data_from_df(raw_df, selected_date_col):
     df, rename_map = normalize_columns(raw_df.copy())
@@ -237,24 +249,30 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR — Configuration & Data Loading
 # ═══════════════════════════════════════════════════════════════════════════════
+
+#use Streamlit secrets first, while keeping sidebar fallback for local testing
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
 
-    api_key = st.text_input(
+    api_key = st.secrets.get("OPENAI_API_KEY", None)
+
+    sidebar_key = st.text_input(
         "OpenAI API Key",
         type="password",
         placeholder="sk-...",
-        help="Your key is never stored."
+        help="For local testing only. In deployment, use Streamlit secrets."
     )
 
-    # ── SECURITY: Validate API key format ─────────────────────────────────────
-    if api_key:
-        key_ok, key_msg = check_api_key_safety(api_key)
+    if not api_key and sidebar_key:
+        key_ok, key_msg = check_api_key_safety(sidebar_key)
         if key_ok:
-            os.environ["OPENAI_API_KEY"] = api_key
+            api_key = sidebar_key
             st.markdown("🔒 <small style='color:#4ade80'>Key format valid</small>", unsafe_allow_html=True)
         else:
             st.markdown(f"⚠️ <small style='color:#f87171'>{key_msg}</small>", unsafe_allow_html=True)
+
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
 
     st.markdown("---")
     st.markdown("### 📁 Data Source")
@@ -348,6 +366,7 @@ with st.sidebar:
     anomaly_date = st.date_input("Anomaly start date", value=pd.Timestamp("2024-04-20"))
     top_k = st.slider("RAG top-k chunks", 3, 10, 5)
     run_vision = st.checkbox("Enable vision analysis", value=True)
+    debug_mode = st.checkbox("Debug mode", value=False)
 
     st.markdown("---")
 
@@ -363,11 +382,8 @@ with st.sidebar:
     if run_clicked and not rate_ok:
         st.warning(rate_msg)
 
-    remaining = rate_limiter.remaining(session_id)
-    st.markdown(
-        f"<small style='color:#94a3b8'>🔒 {remaining} analysis runs remaining this minute</small>",
-        unsafe_allow_html=True
-    )
+    if "request_id" not in st.session_state:
+        st.session_state["request_id"] = str(uuid.uuid4())
 
 
 # ── Guard: need data + API key ─────────────────────────────────────────────────
@@ -376,9 +392,8 @@ if df is None:
     st.stop()
 
 if not os.environ.get("OPENAI_API_KEY"):
-    st.warning("⚠️ Enter your OpenAI API key in the sidebar to run the analysis.")
+    st.warning("⚠️ No OpenAI API key found. In deployment, add OPENAI_API_KEY to Streamlit secrets. For local testing, enter it in the sidebar.")
     st.stop()
-
 
 # ── Lazy imports (only after API key is set) ───────────────────────────────────
 try:
@@ -494,6 +509,9 @@ with tab1:
 
     if run_btn or "agent_result" not in st.session_state:
         with st.spinner("Agent is querying the dataset via tool calls..."):
+            request_id = st.session_state["request_id"]
+            step_start = time.time()
+
             try:
                 selected_metrics = st.session_state.get("selected_metrics", [])
                 selected_groups = st.session_state.get("selected_groups", [])
@@ -505,6 +523,14 @@ with tab1:
                     f"Identify which metrics and segments are most affected. "
                     f"Use the available tools to query the data and provide a structured finding."
                 )
+
+                app_log(
+                    "agent_analysis_started",
+                    request_id=request_id,
+                    selected_metrics=selected_metrics,
+                    selected_groups=selected_groups,
+                )
+
                 agent_result = run_agent(
                     system_prompt=REACT_AGENT_SYSTEM_PROMPT,
                     user_prompt=anomaly_query,
@@ -512,9 +538,25 @@ with tab1:
                     return_state=True,
                 )
                 st.session_state["agent_result"] = agent_result
-            except Exception as e:
-                st.session_state["agent_result"] = f"Agent error: {e}"
 
+                state = agent_result.get("state", {})
+                app_log(
+                    "agent_analysis_finished",
+                    request_id=request_id,
+                    elapsed_sec=round(time.time() - step_start, 3),
+                    actions=len(state.get("actions", [])),
+                    observations=len(state.get("observations", [])),
+                    completed_steps=state.get("completed_steps", []),
+                )
+            except Exception as e:
+                app_log(
+                    "agent_analysis_error",
+                    request_id=request_id,
+                    elapsed_sec=round(time.time() - step_start, 3),
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
+                st.session_state["agent_result"] = f"Agent error: {e}"
     result = st.session_state.get("agent_result", "")
     if result:
         raw_answer = result.get("final_answer", "") if isinstance(result, dict) else str(result)
@@ -529,9 +571,14 @@ with tab1:
             unsafe_allow_html=True
         )
 
-        if isinstance(result, dict):
-            with st.expander("ReAct Memory / State"):
-                st.json(result.get("state", {}))
+        if debug_mode and isinstance(result, dict):
+            with st.expander("Debug trace"):
+                st.json({
+                    "request_id": st.session_state.get("request_id"),
+                    "selected_metrics": st.session_state.get("selected_metrics", []),
+                    "selected_groups": st.session_state.get("selected_groups", []),
+                    "agent_state": result.get("state", {}),
+                })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -556,7 +603,9 @@ with tab2:
         st.code(anomaly_summary, language="text")
 
     if run_btn or "rag_result" not in st.session_state:
-        # Handle PDFs
+        request_id = st.session_state["request_id"]
+        step_start = time.time()
+
         rag_docs_dir = Path(tempfile.mkdtemp())
         knowledge_base_dir = Path(__file__).parent / "knowledge_base"
 
@@ -579,19 +628,42 @@ with tab2:
                 if docs_source:
                     rag.build_or_load()
                     rag_result = rag.generate_rag_response(anomaly_summary, k=top_k)
-                    baseline   = rag.generate_baseline_response(anomaly_summary)
-                    st.session_state["rag_result"]  = rag_result
+                    baseline = rag.generate_baseline_response(anomaly_summary)
+                    st.session_state["rag_result"] = rag_result
                     st.session_state["rag_baseline"] = baseline
-                    st.session_state["rag_mode"]    = "rag"
+                    st.session_state["rag_mode"] = "rag"
                     st.session_state["rag_pipeline"] = rag
+
+                    app_log(
+                        "rag_completed",
+                        request_id=request_id,
+                        mode="rag",
+                        elapsed_sec=round(time.time() - step_start, 3),
+                        top_k=top_k,
+                    )
                 else:
                     baseline = rag.generate_baseline_response(anomaly_summary)
                     st.session_state["rag_baseline"] = baseline
-                    st.session_state["rag_mode"]    = "baseline"
+                    st.session_state["rag_mode"] = "baseline"
                     st.session_state["rag_pipeline"] = rag
+
+                    app_log(
+                        "rag_completed",
+                        request_id=request_id,
+                        mode="baseline",
+                        elapsed_sec=round(time.time() - step_start, 3),
+                    )
             except Exception as e:
                 st.session_state["rag_mode"] = "error"
                 st.session_state["rag_error"] = str(e)
+
+                app_log(
+                    "rag_error",
+                    request_id=request_id,
+                    elapsed_sec=round(time.time() - step_start, 3),
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
     mode = st.session_state.get("rag_mode", "none")
 
@@ -741,6 +813,9 @@ with tab3:
 
             if overview_path is not None and (run_btn or "vision_result" not in st.session_state):
                 with st.spinner("GPT-4o-mini analyzing chart..."):
+                    request_id = st.session_state["request_id"]
+                    step_start = time.time()
+
                     try:
                         vis = analyzer.extract_anomaly_from_chart(overview_path, metric=vision_metric)
                         data_summary = analyzer.build_data_summary(
@@ -753,9 +828,26 @@ with tab3:
                         st.session_state["vision_result"] = vis
                         st.session_state["data_summary"] = data_summary
                         st.session_state["consistency"] = consistency
+
+                        app_log(
+                            "vision_completed",
+                            request_id=request_id,
+                            elapsed_sec=round(time.time() - step_start, 3),
+                            vision_metric=vision_metric,
+                            vision_group=vision_group,
+                            consistency_score=consistency.get("score") if consistency else None,
+                        )
                     except Exception as e:
                         st.session_state["vision_result"] = {"raw_text": f"Error: {e}"}
                         st.session_state["consistency"] = None
+
+                        app_log(
+                            "vision_error",
+                            request_id=request_id,
+                            elapsed_sec=round(time.time() - step_start, 3),
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
 
         vis = st.session_state.get("vision_result", {})
         consistency = st.session_state.get("consistency")
