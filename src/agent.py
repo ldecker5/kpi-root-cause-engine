@@ -44,6 +44,9 @@ from tenacity import retry, wait_exponential_jitter, stop_after_attempt, retry_i
 
 from src.tools import TOOL_DEFINITIONS, TOOL_IMPLEMENTATIONS
 from src.rag_pipeline import RAGPipeline
+from src.performance import (
+    RESPONSE_CACHE, COST_TRACKER, ModelCascade, TASK_TIERS, default_verifier,
+)
 
 # ---------------------------------------------------------------------------
 # Load API key from .env file
@@ -53,6 +56,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Which model to use — you can change this
 MODEL = "gpt-4o-mini"
+
+# Cache can be disabled for tests or non-idempotent workflows.
+USE_RESPONSE_CACHE = os.getenv("KPI_DISABLE_CACHE", "0") != "1"
 
 # ===========================================================================
 # MEMORY / STATE
@@ -101,33 +107,112 @@ class AgentState:
     stop=stop_after_attempt(4),                           # give up after 4 tries
     retry=retry_if_exception_type(Exception),             # retry on ANY error
 )
-def call_model(*, messages, tools=None, tool_choice="auto", max_tokens=900):
-    """
-    Call OpenAI API with automatic retry on failure.
-
-    Why retry?
-        APIs can fail randomly — server overload, network hiccup, rate limit.
-        Instead of crashing, we wait and try again. The exponential backoff
-        means we wait longer each time so we don't hammer the server.
-
-    Parameters:
-        messages:    The conversation so far (system prompt + user message + tool results)
-        tools:       The tool definitions (the "menu")
-        tool_choice: "auto" = model decides, "none" = force text response
-        max_tokens:  Maximum length of response
-    """
-    kwargs = {
-        "model": MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-    }
-
-    # Only include tools if we have them and aren't forcing "none"
+def _raw_call_model(*, model, messages, tools=None, tool_choice="auto",
+                    max_tokens=900, temperature=1.0):
+    """Transport layer — hits the OpenAI API with retry. No caching."""
+    kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = tool_choice
-
     return client.chat.completions.create(**kwargs)
+
+
+def call_model(*, messages, tools=None, tool_choice="auto", max_tokens=900,
+               model: str | None = None, tag: str = "agent",
+               use_cache: bool | None = None):
+    """
+    Cache-aware wrapper around `_raw_call_model`.
+
+    Returns a response object with the same shape the ReAct loop expects
+    (`.choices[0].message.content` / `.tool_calls`). Also records token usage
+    and dollar cost via the shared CostTracker.
+
+    MILESTONE 14 additions vs. original call_model:
+      - ResponseCache lookup by (model, messages, tools, max_tokens).
+        Repeat queries within a session (or across sessions via disk cache)
+        return in ~1ms and cost $0.
+      - CostTracker.record_chat for every call — hits or misses are logged so
+        cache hit-rate is measurable.
+      - Optional per-call `model` override, used by ModelCascade to escalate.
+    """
+    model = model or MODEL
+    use_cache = USE_RESPONSE_CACHE if use_cache is None else use_cache
+
+    if use_cache:
+        hit = RESPONSE_CACHE.get(model, messages, tools, 1.0, max_tokens)
+        if hit is not None:
+            COST_TRACKER.record_chat(model, hit.get("usage"), cached=True, tag=tag)
+            return _CachedResponse(hit)
+
+    response = _raw_call_model(
+        model=model, messages=messages, tools=tools,
+        tool_choice=tool_choice, max_tokens=max_tokens,
+    )
+    COST_TRACKER.record_chat(model, getattr(response, "usage", None),
+                             cached=False, tag=tag)
+
+    if use_cache:
+        RESPONSE_CACHE.put(model, messages, tools, 1.0, max_tokens,
+                           _serialize_response(response))
+    return response
+
+
+# ---- Cache serialization helpers ----
+
+def _serialize_response(resp) -> Dict[str, Any]:
+    """Strip an OpenAI response down to what the agent loop consumes."""
+    choice = resp.choices[0]
+    msg = choice.message
+    tool_calls = []
+    for tc in (msg.tool_calls or []):
+        tool_calls.append({
+            "id": tc.id,
+            "type": tc.type,
+            "function": {"name": tc.function.name,
+                         "arguments": tc.function.arguments},
+        })
+    usage = getattr(resp, "usage", None)
+    return {
+        "content": msg.content,
+        "tool_calls": tool_calls,
+        "usage": {
+            "prompt_tokens": _g(usage, "prompt_tokens"),
+            "completion_tokens": _g(usage, "completion_tokens"),
+        } if usage else None,
+    }
+
+
+def _g(o, k):
+    return o.get(k) if isinstance(o, dict) else getattr(o, k, None)
+
+
+class _CachedMessage:
+    def __init__(self, content, tool_calls):
+        self.content = content
+        self.tool_calls = [_CachedToolCall(tc) for tc in tool_calls] if tool_calls else None
+
+
+class _CachedToolCall:
+    def __init__(self, d):
+        self.id = d["id"]
+        self.type = d["type"]
+        self.function = type("F", (), {
+            "name": d["function"]["name"],
+            "arguments": d["function"]["arguments"],
+        })
+
+
+class _CachedChoice:
+    def __init__(self, entry):
+        self.message = _CachedMessage(entry.get("content"),
+                                      entry.get("tool_calls"))
+
+
+class _CachedResponse:
+    """Quacks like an OpenAI response so the agent loop needs no changes."""
+    def __init__(self, entry: Dict[str, Any]):
+        self.choices = [_CachedChoice(entry)]
+        self.usage = entry.get("usage")
 
 # ===========================================================================
 # RAG TOOL
@@ -255,26 +340,33 @@ def summarize_state(state: AgentState) -> str:
 
 
 def generate_next_thought(state: AgentState, debug: bool = False) -> str:
+    """
+    Cheap planning step — routed through a model cascade so the tiny nano
+    model handles it unless it fails the verifier.
+    """
     prompt = THOUGHT_PROMPT_TEMPLATE.format(
         user_prompt=state.user_prompt,
         state_summary=summarize_state(state),
     )
+    messages = [
+        {"role": "system", "content": "You are a planning module for a ReAct agent."},
+        {"role": "user", "content": prompt},
+    ]
 
-    response = call_model(
-        messages=[
-            {"role": "system", "content": "You are a planning module for a ReAct agent."},
-            {"role": "user", "content": prompt},
-        ],
-        tools=None,
-        tool_choice="none",
-        max_tokens=200,
-    )
+    cascade = ModelCascade(tiers=TASK_TIERS["plan"], verifier=default_verifier)
 
+    def _run(model_name: str):
+        return call_model(
+            messages=messages, tools=None, max_tokens=200,
+            model=model_name, tag=f"plan:{model_name}",
+        )
+
+    response, used = cascade.run(_run)
     thought = response.choices[0].message.content or ""
     state.record_thought(thought)
 
     if debug:
-        print(f"\n[Thought {state.current_step}] {thought}")
+        print(f"\n[Thought {state.current_step} via {used}] {thought}")
 
     return thought
 

@@ -22,6 +22,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import Chroma
 
+from src.performance import EMBEDDING_CACHE, COST_TRACKER
+
 # ---------------------------------------------------------------------------
 # Paths — resolve relative to this file so imports work from anywhere
 # ---------------------------------------------------------------------------
@@ -33,6 +35,11 @@ PERSIST_DIR = str(_PROJECT_ROOT / "chroma_db")
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 GENERATION_MODEL = "gpt-4.1-nano"
+
+# Matryoshka-style "quantization" for embeddings. Dropping from 1536 → 512 dims
+# cuts vector-store RAM/disk ~3x with <2% recall loss on most domains (per
+# OpenAI). Set to None to keep the full native dimensionality.
+EMBEDDING_DIMENSIONS: int | None = 512
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -61,6 +68,64 @@ def _format_context(docs, max_chars: int = 6000) -> str:
         blocks.append(block)
         total += len(block)
     return "\n\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# Caching embeddings shim — LangChain-compatible
+# ---------------------------------------------------------------------------
+
+class _CachingEmbeddings:
+    """
+    Wraps a LangChain Embeddings object with a hash-keyed cache + cost tracking.
+
+    Implements just `embed_documents` and `embed_query`, which is all Chroma
+    needs. Cache hits skip the API entirely; misses go through the underlying
+    embeddings object in one batched call.
+    """
+
+    def __init__(self, inner, *, model: str, dimensions: int | None):
+        self._inner = inner
+        self._model = model
+        self._dimensions = dimensions
+
+    # LangChain expects this exact signature on both methods.
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        out: list[list[float] | None] = [None] * len(texts)
+        pending_idx: list[int] = []
+        pending_texts: list[str] = []
+
+        for i, t in enumerate(texts):
+            hit = EMBEDDING_CACHE.get(self._model, self._dimensions, t)
+            if hit is not None:
+                out[i] = hit
+            else:
+                pending_idx.append(i)
+                pending_texts.append(t)
+
+        if pending_texts:
+            vecs = self._inner.embed_documents(pending_texts)
+            # OpenAI usage isn't exposed through LangChain here, so approximate:
+            # ~1 token per 4 chars is the standard heuristic for embeddings.
+            approx_tokens = sum(max(1, len(t) // 4) for t in pending_texts)
+            COST_TRACKER.record_embed(self._model, approx_tokens,
+                                      tag="rag:doc")
+            for idx, text, vec in zip(pending_idx, pending_texts, vecs):
+                out[idx] = vec
+                EMBEDDING_CACHE.put(self._model, self._dimensions, text, vec)
+
+        return [v if v is not None else [] for v in out]
+
+    def embed_query(self, text: str) -> list[float]:
+        hit = EMBEDDING_CACHE.get(self._model, self._dimensions, text)
+        if hit is not None:
+            # Log a $0 entry so cache hits are observable in telemetry.
+            COST_TRACKER.record_embed(self._model, 0, cached=True, tag="rag:query")
+            return hit
+        vec = self._inner.embed_query(text)
+        approx_tokens = max(1, len(text) // 4)
+        COST_TRACKER.record_embed(self._model, approx_tokens, tag="rag:query")
+        EMBEDDING_CACHE.put(self._model, self._dimensions, text, vec)
+        return vec
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +164,23 @@ class RAGPipeline:
         persist_dir: str = PERSIST_DIR,
         embedding_model: str = EMBEDDING_MODEL,
         generation_model: str = GENERATION_MODEL,
+        dimensions: int | None = EMBEDDING_DIMENSIONS,
     ):
         self.docs_dir = Path(docs_dir)
         self.persist_dir = persist_dir
-        self.embeddings = OpenAIEmbeddings(model=embedding_model)
+        self.embedding_model = embedding_model
+        self.dimensions = dimensions
+
+        # Base LangChain embeddings; wrapped below with caching + cost tracking.
+        base_kwargs = {"model": embedding_model}
+        if dimensions:
+            base_kwargs["dimensions"] = dimensions
+        self.embeddings = _CachingEmbeddings(
+            OpenAIEmbeddings(**base_kwargs),
+            model=embedding_model,
+            dimensions=dimensions,
+        )
+
         self.llm = ChatOpenAI(model=generation_model)
         self.vector_db = None
 

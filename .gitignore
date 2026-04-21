@@ -22,3 +22,5 @@ Thumbs.db
 chroma_db/
 # Milestone 8: Multimodal — generated chart images
 charts/
+# Milestone 14: Performance — response/embedding caches + usage log
+.perf_cache/
