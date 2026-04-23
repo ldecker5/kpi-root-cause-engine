@@ -342,34 +342,44 @@ if step == 1:
     if data_source == "Use sample dataset":
         sample_path = Path(__file__).parent / "data" / "sample_ecommerce_kpi_data.csv"
         if sample_path.exists():
-            raw_df = pd.read_csv(sample_path)
+            sample_df = pd.read_csv(sample_path)
+        
+            previous_raw_df = st.session_state.get("raw_df")
+            is_new_dataset = (
+                previous_raw_df is None
+                or list(previous_raw_df.columns) != list(sample_df.columns)
+                or len(previous_raw_df) != len(sample_df)
+            )
+        
+            raw_df = sample_df
             st.session_state["raw_df"] = raw_df
         
-            for key in [
-                "df",
-                "selected_analysis_columns",
-                "selected_metrics",
-                "selected_groups",
-                "resolved_dimension_keys",
-                "resolved_metric_keys",
-                "profile_df",
-                "recommended_exclusions",
-                "compatibility",
-                "anomaly_candidates",
-                "date_freq",
-                "wide_info",
-                "agent_result",
-                "rag_result",
-                "rag_baseline",
-                "rag_mode",
-                "rag_error",
-                "rag_pipeline",
-                "vision_result",
-                "data_summary",
-                "consistency",
-                "analysis_ran",
-            ]:
-                st.session_state.pop(key, None)
+            if is_new_dataset:
+                for key in [
+                    "df",
+                    "selected_analysis_columns",
+                    "selected_metrics",
+                    "selected_groups",
+                    "resolved_dimension_keys",
+                    "resolved_metric_keys",
+                    "profile_df",
+                    "recommended_exclusions",
+                    "compatibility",
+                    "anomaly_candidates",
+                    "date_freq",
+                    "wide_info",
+                    "agent_result",
+                    "rag_result",
+                    "rag_baseline",
+                    "rag_mode",
+                    "rag_error",
+                    "rag_pipeline",
+                    "vision_result",
+                    "data_summary",
+                    "consistency",
+                    "analysis_ran",
+                ]:
+                    st.session_state.pop(key, None)
         
             st.success(f"Loaded sample dataset: {len(raw_df):,} rows")
         else:
@@ -394,33 +404,41 @@ if step == 1:
                     raw_df = None
 
                 if raw_df is not None:
+                    previous_raw_df = st.session_state.get("raw_df")
+                    is_new_dataset = (
+                        previous_raw_df is None
+                        or list(previous_raw_df.columns) != list(raw_df.columns)
+                        or len(previous_raw_df) != len(raw_df)
+                    )
+                
                     st.session_state["raw_df"] = raw_df
                 
-                    for key in [
-                        "df",
-                        "selected_analysis_columns",
-                        "selected_metrics",
-                        "selected_groups",
-                        "resolved_dimension_keys",
-                        "resolved_metric_keys",
-                        "profile_df",
-                        "recommended_exclusions",
-                        "compatibility",
-                        "anomaly_candidates",
-                        "date_freq",
-                        "wide_info",
-                        "agent_result",
-                        "rag_result",
-                        "rag_baseline",
-                        "rag_mode",
-                        "rag_error",
-                        "rag_pipeline",
-                        "vision_result",
-                        "data_summary",
-                        "consistency",
-                        "analysis_ran",
-                    ]:
-                        st.session_state.pop(key, None)
+                    if is_new_dataset:
+                        for key in [
+                            "df",
+                            "selected_analysis_columns",
+                            "selected_metrics",
+                            "selected_groups",
+                            "resolved_dimension_keys",
+                            "resolved_metric_keys",
+                            "profile_df",
+                            "recommended_exclusions",
+                            "compatibility",
+                            "anomaly_candidates",
+                            "date_freq",
+                            "wide_info",
+                            "agent_result",
+                            "rag_result",
+                            "rag_baseline",
+                            "rag_mode",
+                            "rag_error",
+                            "rag_pipeline",
+                            "vision_result",
+                            "data_summary",
+                            "consistency",
+                            "analysis_ran",
+                        ]:
+                            st.session_state.pop(key, None)
                 
                     st.success(f"Uploaded file: {len(raw_df):,} rows")
             except Exception as e:
@@ -536,35 +554,6 @@ elif step == 2:
             )
             
             st.session_state["selected_analysis_columns"] = selected_analysis_columns
-            st.session_state["selected_metrics"] = selected_metrics
-            st.session_state["selected_groups"] = selected_groups
-
-            dynamic_metric_defaults = [c for c in suggest_default_metrics(df) if c in allowed_metric_options]
-            dynamic_group_defaults = [c for c in suggest_default_groups(df) if c in allowed_group_options]
-            
-            saved_metric_defaults = st.session_state.get(
-                "selected_metrics",
-                dynamic_metric_defaults or allowed_metric_options[:min(3, len(allowed_metric_options))]
-            )
-            saved_group_defaults = st.session_state.get("selected_groups", dynamic_group_defaults)
-            
-            valid_metric_defaults = [c for c in saved_metric_defaults if c in allowed_metric_options]
-            valid_group_defaults = [c for c in saved_group_defaults if c in allowed_group_options]
-            
-            selected_metrics = st.multiselect(
-                "Performance metrics",
-                options=allowed_metric_options,
-                default=valid_metric_defaults,
-                key="wizard_metrics",
-            )
-            
-            selected_groups = st.multiselect(
-                "Segment columns",
-                options=allowed_group_options,
-                default=valid_group_defaults,
-                key="wizard_groups",
-            )
-            
             st.session_state["selected_metrics"] = selected_metrics
             st.session_state["selected_groups"] = selected_groups
 
