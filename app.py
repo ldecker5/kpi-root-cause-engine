@@ -1,5 +1,41 @@
 """
+Oops AI — KPI Root Cause Analysis Engine (Streamlit App)
 
+This file defines the main Streamlit application used to run the Oops AI
+KPI anomaly detection and root-cause analysis workflow.
+
+The app provides an interactive multi-step interface that allows users to:
+
+1. Upload a time-series KPI dataset or use a sample dataset.
+2. Configure the dataset by selecting the date column, KPI metrics,
+   and optional segment/grouping columns.
+3. Validate dataset readiness and suggest anomaly dates.
+4. Configure analysis settings.
+5. Run automated anomaly detection, root-cause analysis, and
+   AI-generated executive explanations.
+
+Core capabilities exposed through this interface include:
+- KPI anomaly detection across time
+- Segment-level root cause investigation
+- Statistical comparison of pre- and post-anomaly periods
+- RAG-assisted explanations using an LLM
+- Visualizations and executive-ready summaries
+
+This file primarily handles:
+- UI rendering (Streamlit layout)
+- Dataset validation and configuration
+- User interaction state management
+- Triggering downstream analysis modules located in /src
+
+It does NOT implement the core analytics algorithms themselves.
+Those live in the src/ modules (e.g., anomaly detection, RCA logic,
+and LLM explanation generation).
+
+Typical workflow in this file:
+Upload → Configure → Validate → Analyze → Interpret results.
+
+Author: Oops AI
+Course: DSBA-6010
 """
 
 import os
@@ -298,6 +334,7 @@ st.info(
 )
 
 st.markdown("### Setup Progress")
+st.progress(current_step / TOTAL_STEPS)
 
 progress_cols = st.columns(len(setup_steps))
 for i, step_name in enumerate(setup_steps, start=1):
@@ -419,6 +456,11 @@ if step == 1:
                     st.session_state.pop(key, None)
         
             st.success(f"Loaded sample dataset: {len(raw_df):,} rows")
+
+            valid, msg = validate_dataset(raw_df)
+            if not valid:
+                st.error(msg)
+                st.stop()
         else:
             st.error("sample_ecommerce_kpi_data.csv not found in data/")
     else:
@@ -487,6 +529,7 @@ if step == 1:
                 st.error(f"Could not read uploaded file: {e}")
 
     if raw_df is not None:
+        st.caption("Preview of uploaded dataset")
         st.dataframe(raw_df.head(20), use_container_width=True)
 
     st.divider()
@@ -783,6 +826,15 @@ elif step == 5:
     st.markdown(f"**Segment columns:** {selected_groups if selected_groups else 'None selected'}")
     st.markdown(f"**Anomaly date:** {anomaly_date}")
 
+    st.markdown("##### Expected analysis summary")
+    st.info(
+        f"""
+Oops AI will analyze the selected KPI metrics **{selected_metrics if selected_metrics else ['None']}**
+starting from **{anomaly_date}** and compare them across
+**{selected_groups if selected_groups else ['overall totals only']}**.
+"""
+    )
+
     session_id = get_session_id(st.session_state)
     run_clicked = st.button("🚀 Run Full Analysis", use_container_width=True)
     if run_clicked:
@@ -879,6 +931,8 @@ with tab1:
     anomaly_ts = pd.Timestamp(anomaly_date)
     before = df[df["date"] < anomaly_ts]
     after = df[df["date"] >= anomaly_ts]
+    if len(before) == 0 or len(after) == 0:
+        st.info("No valid pre/post anomaly comparison can be made for the selected anomaly date.")
 
     selected_metrics = st.session_state.get("selected_metrics", [])
     selected_groups = st.session_state.get("selected_groups", [])
