@@ -36,24 +36,6 @@ kpi_root_cause_engine/
 │
 └── notebooks/               ← Your original Colab notebooks (for reference)
 ```
-
-## Setup
-
-1. Open this folder in VS Code
-2. Create a virtual environment: `python -m venv venv`
-3. Activate it: `source venv/bin/activate` (Mac) or `venv\Scripts\activate` (Windows)
-4. Install packages: `pip install -r requirements.txt`
-5. Create `.env` file with: `OPENAI_API_KEY=sk-your-key-here`
-6. Run: `python main.py`
-```
-## Streamlit Cloud Deployment
-
-Entrypoint: `app.py`
-
-Required secret:
-```toml
-OPENAI_API_KEY = "sk-your-key-here"
-
 ## AI Techniques Used
 
 Prompt Engineering
@@ -71,3 +53,20 @@ The system follows a multi-step reasoning process:
 2. Identify potential drivers
 3. Retrieve relevant knowledge
 4. Generate explanation
+
+## Setup
+
+1. Open this folder in VS Code
+2. Create a virtual environment: `python -m venv venv`
+3. Activate it: `source venv/bin/activate` (Mac) or `venv\Scripts\activate` (Windows)
+4. Install packages: `pip install -r requirements.txt`
+5. Create `.env` file with: `OPENAI_API_KEY=sk-your-key-here`
+6. Run: `python main.py`
+```
+## Streamlit Cloud Deployment
+
+Entrypoint: `app.py`
+
+Required secret:
+```toml
+OPENAI_API_KEY = "sk-your-key-here"
