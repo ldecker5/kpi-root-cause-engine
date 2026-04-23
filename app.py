@@ -309,9 +309,9 @@ for i, step_name in enumerate(setup_steps, start=1):
         on_click=lambda target=i: st.session_state.update({"setup_step": target}),
     )
 
-    name_cols = st.columns(len(setup_steps))
-    for i, step_name in enumerate(setup_steps, start=1):
-        name_cols[i - 1].caption(step_name)
+name_cols = st.columns(len(setup_steps))
+for i, step_name in enumerate(setup_steps, start=1):
+    name_cols[i - 1].caption(step_name)
 # ═══════════════════════════════════════════════════════════════════════════════
 # FULL-PAGE SETUP WIZARD
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -375,10 +375,12 @@ if step == 1:
     if raw_df is not None:
         st.dataframe(raw_df.head(20), use_container_width=True)
 
-    nav1, nav2 = st.columns([1, 1])
-    with nav2:
+    st.divider()
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col3:
         st.button("Next ➜", on_click=go_next_step, disabled=raw_df is None)
-
+        
 # ── STEP 2: Configure columns ──────────────────────────────────────────────────
 elif step == 2:
     st.subheader("Step 2 — Configure Columns")
@@ -453,15 +455,16 @@ elif step == 2:
                 ),
                 key="wizard_metrics",
             )
-            st.session_state["selected_metrics"] = selected_metrics
-            st.session_state["selected_groups"] = selected_groups
-
+            
             selected_groups = st.multiselect(
                 "Segment columns",
                 options=allowed_group_options,
                 default=st.session_state.get("selected_groups", dynamic_group_defaults),
                 key="wizard_groups",
             )
+            
+            st.session_state["selected_metrics"] = selected_metrics
+            st.session_state["selected_groups"] = selected_groups
 
             validation = validate_dataset_for_analysis(df, "date", selected_metrics, selected_groups)
             for err in validation["errors"]:
@@ -554,10 +557,13 @@ elif step == 3:
     with st.expander("Schema preview", expanded=False):
         st.dataframe(profile_df, use_container_width=True)
 
-    nav1, nav2 = st.columns([1, 1])
-    with nav1:
+    st.divider()
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
         st.button("⬅ Back", on_click=go_prev_step)
-    with nav2:
+    
+    with col3:
         st.button("Next ➜", on_click=go_next_step)
 
 # ── STEP 4: Analysis settings ──────────────────────────────────────────────────
@@ -616,10 +622,13 @@ elif step == 4:
     
     st.session_state["analysis_ran"] = False
 
-    nav1, nav2 = st.columns([1, 1])
-    with nav1:
+    st.divider()
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
         st.button("⬅ Back", on_click=go_prev_step)
-    with nav2:
+    
+    with col3:
         st.button("Next ➜", on_click=go_next_step)
 
 # ── STEP 5: Ready to run ───────────────────────────────────────────────────────
@@ -657,8 +666,10 @@ elif step == 5:
     if "request_id" not in st.session_state:
         st.session_state["request_id"] = str(uuid.uuid4())
 
-    nav1, _ = st.columns([1, 1])
-    with nav1:
+    st.divider()
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
         st.button("⬅ Back", on_click=go_prev_step)
 
 # Make values available below
@@ -998,7 +1009,7 @@ with tab2:
             st.markdown(f"<div class='baseline-box'>{filtered_baseline}</div>", unsafe_allow_html=True)
 
     elif mode == "baseline":
-        st.info("💡 No PDFs found — running in baseline (no RAG) mode. Upload PDFs in the sidebar to enable RAG.")
+        st.info("💡 No PDFs found — running in baseline (no RAG) mode. Add PDFs in Step 4 to enable RAG.")
         baseline = st.session_state.get("rag_baseline", "")
 
         # ── SECURITY: Filter baseline output ──────────────────────────────
