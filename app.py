@@ -50,6 +50,13 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 from src.data_loader import clean_column_name, normalize_columns, infer_date_column
 from src.tools import set_active_dataframe
 from src.security import (
