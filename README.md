@@ -1,6 +1,16 @@
-# KPI Root-Cause Analysis Engine
+# Oops AI – KPI Root Cause Analysis Engine
 
-An LLM-powered system that automatically investigates why business KPIs changed.
+## Overview
+Oops AI automatically detects KPI anomalies and identifies potential root causes using statistical analysis and LLM-generated explanations.
+
+## Key Features
+• Time-series KPI anomaly detection  
+• Segment-level root cause analysis  
+• RAG-powered explanations  
+• Executive-ready dashboards
+
+## Architecture
+Streamlit UI → Analysis Engine → RAG Knowledge Base → LLM Explanation
 
 ## Project Structure
 
@@ -43,3 +53,21 @@ Entrypoint: `app.py`
 Required secret:
 ```toml
 OPENAI_API_KEY = "sk-your-key-here"
+
+## AI Techniques Used
+
+Prompt Engineering
+Structured prompts generate executive summaries.
+
+Retrieval Augmented Generation (RAG)
+Domain knowledge documents are embedded and retrieved to ground explanations.
+
+Tool Calling
+The LLM can call analytical functions to compute KPI changes and segment breakdowns.
+
+Agent Workflow
+The system follows a multi-step reasoning process:
+1. Detect anomaly
+2. Identify potential drivers
+3. Retrieve relevant knowledge
+4. Generate explanation
