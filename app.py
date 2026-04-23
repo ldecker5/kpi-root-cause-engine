@@ -247,6 +247,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+st.info(
+    """
+**How to use Oops AI**
+
+1. Upload a dataset with a date column and KPI metrics  
+2. Select metrics and grouping columns in the sidebar  
+3. Review data readiness and anomaly dates  
+4. Run the full analysis
+"""
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR — Configuration & Data Loading
@@ -254,9 +264,27 @@ st.markdown("""
 
 #use Streamlit secrets first, while keeping sidebar fallback for local testing
 with st.sidebar:
-    st.markdown("### ⚙️ Configuration")
+    with st.expander("⚙️ Configuration", expanded=False):
 
-    api_key = st.secrets.get("OPENAI_API_KEY", None)
+        api_key = st.secrets.get("OPENAI_API_KEY", None)
+    
+        sidebar_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            placeholder="sk-...",
+            help="For local testing only. In deployment, use Streamlit secrets."
+        )
+    
+        if not api_key and sidebar_key:
+            key_ok, key_msg = check_api_key_safety(sidebar_key)
+            if key_ok:
+                api_key = sidebar_key
+                st.markdown("🔒 <small style='color:#4ade80'>Key format valid</small>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"⚠️ <small style='color:#f87171'>{key_msg}</small>", unsafe_allow_html=True)
+    
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
 
     sidebar_key = st.text_input(
         "OpenAI API Key",
@@ -276,8 +304,7 @@ with st.sidebar:
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
-    st.markdown("---")
-    st.markdown("### 📁 Data Source")
+with st.expander("📁 Data Upload", expanded=True):
 
     data_source = st.radio(
         "Choose data",
@@ -318,8 +345,7 @@ with st.sidebar:
         preview_df, _ = normalize_columns(raw_df.copy())
         inferred_date = infer_date_column(preview_df)
 
-        st.markdown("---")
-        st.markdown("### 🧭 Column Selection")
+with st.expander("🧭 Column Setup", expanded=True):
 
         all_cols = list(preview_df.columns)
 
@@ -350,10 +376,46 @@ with st.sidebar:
                     [c for c in high_missing_cols if c != "date"]
                 ))
 
-                st.markdown("#### Dataset compatibility")
-                compatibility = score_dataset_compatibility(df, "date", metric_keys, dimension_keys)
-                st.metric("Compatibility", f'{compatibility["label"]} ({compatibility["score"]}/100)')
-                st.caption(" • ".join(compatibility["reasons"]))
+                with st.expander("✅ Data Readiness", expanded=True):
+                    score = compatibility["score"]
+                    st.metric("Readiness Score", f"{score}/100", compatibility["label"])
+                
+                    for reason in compatibility["reasons"]:
+                        st.markdown(f"- {reason}")
+                
+                    st.caption(f"Inferred date frequency: {date_freq}")
+                
+                    if recommended_exclusions:
+                        st.info(f"Recommended exclusions: {recommended_exclusions}")
+                
+                    if wide_info["likely_wide_format"]:
+                        st.warning(
+                            "This file may be in wide format. Oops AI works best with long-format time-series data."
+                        )
+                
+                    with st.expander("Schema preview", expanded=False):
+                        st.dataframe(profile_df, use_container_width=True)
+                
+                score = compatibility["score"]
+                label = compatibility["label"]
+                
+                if score >= 80:
+                    readiness_color = "🟢"
+                elif score >= 55:
+                    readiness_color = "🟡"
+                else:
+                    readiness_color = "🔴"
+                
+                st.metric("Readiness Score", f"{score}/100", label)
+                
+                with st.expander("Why this score?", expanded=False):
+                    for reason in compatibility["reasons"]:
+                        st.markdown(f"- {reason}")
+                
+                if wide_info["likely_wide_format"]:
+                    st.warning(
+                        "This file may be in wide format. Oops AI works best with long-format time-series data."
+                    )
 
                 if wide_info["likely_wide_format"]:
                     st.warning(
@@ -426,8 +488,7 @@ with st.sidebar:
                 )
                 df = None
 
-    st.markdown("---")
-    st.markdown("### 📚 Knowledge Base")
+with st.expander("📚 Knowledge Base", expanded=False):
     pdf_files = st.file_uploader(
         "Upload PDFs (optional)",
         type=["pdf"],
@@ -435,8 +496,7 @@ with st.sidebar:
         help="Powers the RAG explanation. Skip to use LLM-only mode."
     )
 
-    st.markdown("---")
-    st.markdown("### 🔧 Settings")
+with st.expander("🔧 Analysis Settings", expanded=True):
 
     candidate_dates = st.session_state.get("anomaly_candidates", [])
     default_anomaly_value = pd.Timestamp("2024-04-20")
