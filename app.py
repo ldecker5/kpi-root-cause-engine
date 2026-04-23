@@ -334,42 +334,16 @@ if step == 1:
 
     st.info(
     """
-    **Dataset requirements**
+    **What data works best with Oops AI**
     
-    ✔ One **date column**  
-    ✔ At least one **numeric KPI metric**  
-    ✔ Optional segment columns (region, category, device, etc.)
+    Oops AI analyzes **time-series KPI datasets**.
+    ✔ One **date column** (e.g., daily, weekly, or monthly)
+    ✔ At least one **numeric KPI metric** (e.g., revenue, sales, conversions)
+    ✔ Optional segment columns (e.g., region, category, device, etc.)
     
     Examples: sales dashboards, marketing metrics, operational KPIs.
     
     Avoid uploading datasets that only contain IDs or text fields.
-    """
-    )
-    
-    st.markdown(
-    """
-    ### What data works best with Oops AI
-    
-    Oops AI analyzes **time-series KPI datasets**. Your file should ideally contain:
-    
-    **Required**
-    - One **date column** (daily, weekly, or monthly)
-    - At least **one numeric KPI** (e.g., revenue, sales, conversions)
-    
-    **Recommended**
-    - Several **segment columns** (e.g., region, category, device, channel)
-    
-    **Good examples**
-    - Daily sales by region
-    - Marketing performance by channel
-    - Website traffic by device
-    - Operational metrics by product line
-    
-    **Avoid**
-    - ID fields like `row_id`, `postal_code`, `customer_id`
-    - Datasets without a time column
-    - Files with only text columns
-    
     You will select the **date column, KPI metrics, and segment columns** in the next step.
     """
     )
