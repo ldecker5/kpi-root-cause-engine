@@ -302,7 +302,7 @@ for i, step_name in enumerate(setup_steps, start=1):
         disabled = True
 
     jump_cols[i - 1].button(
-        ("➡ Current" if i == current_step else f"Go to {i}")
+        ("➡ Current" if i == current_step else f"Go to {i}"),
         key=f"jump_step_{i}",
         use_container_width=True,
         disabled=disabled,
