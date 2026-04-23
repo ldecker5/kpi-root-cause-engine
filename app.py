@@ -39,6 +39,18 @@ from src.data_profiler import (
     score_dataset_compatibility,
 )
 
+# Wizard state
+
+if "setup_step" not in st.session_state:
+    st.session_state["setup_step"] = 1
+
+def go_next_step():
+    st.session_state["setup_step"] = min(5, st.session_state["setup_step"] + 1)
+
+def go_prev_step():
+    st.session_state["setup_step"] = max(1, st.session_state["setup_step"] - 1)
+
+# App
 def app_log(event_type, **payload):
     record = {
         "ts": datetime.utcnow().isoformat(),
@@ -247,255 +259,378 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+setup_steps = [
+    "Upload Data",
+    "Configure Columns",
+    "Data Readiness",
+    "Analysis Settings",
+    "Run Analysis",
+]
+
+current_step = st.session_state["setup_step"]
+
 st.info(
     """
 **How to use Oops AI**
 
 1. Upload a dataset with a date column and KPI metrics  
-2. Select metrics and grouping columns in the sidebar  
-3. Review data readiness and anomaly dates  
+2. Configure metrics and segment columns  
+3. Review data readiness and suggested anomaly dates  
 4. Run the full analysis
 """
 )
 
+st.markdown("### Setup Progress")
+progress_cols = st.columns(len(setup_steps))
+for i, step_name in enumerate(setup_steps, start=1):
+    if i == current_step:
+        progress_cols[i - 1].markdown(f"**➡ {step_name}**")
+    else:
+        progress_cols[i - 1].markdown(step_name)
 # ═══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — Configuration & Data Loading
+# FULL-PAGE SETUP WIZARD
 # ═══════════════════════════════════════════════════════════════════════════════
 
-#use Streamlit secrets first, while keeping sidebar fallback for local testing
-with st.sidebar:
-    with st.expander("⚙️ Configuration", expanded=False):
-        api_key = st.secrets.get("OPENAI_API_KEY", None)
+api_key = st.secrets.get("OPENAI_API_KEY", None)
+if api_key:
+    os.environ["OPENAI_API_KEY"] = api_key
 
-        sidebar_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            placeholder="sk-...",
-            help="For local testing only. In deployment, use Streamlit secrets."
-        )
+df = None
+raw_df = st.session_state.get("raw_df")
+pdf_files = st.session_state.get("pdf_files", None)
+dimension_keys = st.session_state.get("resolved_dimension_keys", [])
+metric_keys = st.session_state.get("resolved_metric_keys", [])
 
-        if not api_key and sidebar_key:
-            key_ok, key_msg = check_api_key_safety(sidebar_key)
-            if key_ok:
-                api_key = sidebar_key
-                st.markdown("🔒 <small style='color:#4ade80'>Key format valid</small>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"⚠️ <small style='color:#f87171'>{key_msg}</small>", unsafe_allow_html=True)
+step = st.session_state["setup_step"]
 
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
+# ── STEP 1: Upload data ────────────────────────────────────────────────────────
+if step == 1:
+    st.subheader("Step 1 — Upload Data")
 
-    with st.expander("📁 Data Upload", expanded=True):
-        data_source = st.radio(
-            "Choose data",
-            ["Use sample dataset", "Upload your own file"],
-            index=0
-        )
+    data_source = st.radio(
+        "Choose data",
+        ["Use sample dataset", "Upload your own file"],
+        index=0,
+        key="wizard_data_source",
+    )
 
-        df = None
-        raw_df = None
-        dimension_keys = []
-        metric_keys = []
-        pdf_files = None
-
-        if data_source == "Use sample dataset":
-            sample_path = Path(__file__).parent / "data" / "sample_ecommerce_kpi_data.csv"
-            if sample_path.exists():
-                raw_df = pd.read_csv(sample_path)
-                st.success(f"✓ Loaded {len(raw_df):,} rows")
-            else:
-                st.error("sample_ecommerce_kpi_data.csv not found in data/")
+    if data_source == "Use sample dataset":
+        sample_path = Path(__file__).parent / "data" / "sample_ecommerce_kpi_data.csv"
+        if sample_path.exists():
+            raw_df = pd.read_csv(sample_path)
+            st.session_state["raw_df"] = raw_df
+            st.success(f"Loaded sample dataset: {len(raw_df):,} rows")
         else:
-            uploaded = st.file_uploader("Upload data file", type=["csv", "xlsx", "xls", "tsv"])
-            if uploaded:
-                try:
-                    suffix = Path(uploaded.name).suffix.lower()
-                    if suffix == ".csv":
-                        raw_df = pd.read_csv(uploaded)
-                    elif suffix == ".tsv":
-                        raw_df = pd.read_csv(uploaded, sep="\t")
-                    elif suffix in [".xlsx", ".xls"]:
-                        raw_df = pd.read_excel(uploaded)
-                    else:
-                        st.error("Unsupported file type. Please upload CSV, TSV, or Excel.")
-                except Exception as e:
-                    st.error(f"Could not read uploaded file: {e}")
+            st.error("sample_ecommerce_kpi_data.csv not found in data/")
+    else:
+        uploaded = st.file_uploader(
+            "Upload data file",
+            type=["csv", "xlsx", "xls", "tsv"],
+            key="wizard_upload",
+        )
+        if uploaded:
+            try:
+                suffix = Path(uploaded.name).suffix.lower()
+                if suffix == ".csv":
+                    raw_df = pd.read_csv(uploaded)
+                elif suffix == ".tsv":
+                    raw_df = pd.read_csv(uploaded, sep="\t")
+                elif suffix in [".xlsx", ".xls"]:
+                    raw_df = pd.read_excel(uploaded)
+                else:
+                    st.error("Unsupported file type. Please upload CSV, TSV, or Excel.")
+                    raw_df = None
+
+                if raw_df is not None:
+                    st.session_state["raw_df"] = raw_df
+                    st.success(f"Uploaded file: {len(raw_df):,} rows")
+            except Exception as e:
+                st.error(f"Could not read uploaded file: {e}")
 
     if raw_df is not None:
-        preview_df, _ = normalize_columns(raw_df.copy())
-        inferred_date = infer_date_column(preview_df)
+        st.dataframe(raw_df.head(20), use_container_width=True)
 
-        with st.expander("🧭 Column Setup", expanded=True):
-            all_cols = list(preview_df.columns)
+    nav1, nav2 = st.columns([1, 1])
+    with nav2:
+        st.button("Next ➜", on_click=go_next_step, disabled=raw_df is None)
 
-            if len(all_cols) > 0:
-                default_date_idx = all_cols.index(inferred_date) if inferred_date in all_cols else 0
-                selected_date_col = st.selectbox("Date column", all_cols, index=default_date_idx)
-            else:
-                selected_date_col = None
+# ── STEP 2: Configure columns ──────────────────────────────────────────────────
+elif step == 2:
+    st.subheader("Step 2 — Configure Columns")
 
-            if selected_date_col is not None:
-                try:
-                    loaded = load_data_from_df(raw_df, selected_date_col)
-                    df = loaded["df"]
-                    dimension_keys = loaded["dimension_keys"]
-                    metric_keys = loaded["metric_keys"]
+    raw_df = st.session_state.get("raw_df")
+    if raw_df is None:
+        st.warning("Upload a dataset first.")
+        st.button("⬅ Back", on_click=go_prev_step)
+        st.stop()
 
-                    set_active_dataframe(df)
+    preview_df, _ = normalize_columns(raw_df.copy())
+    inferred_date = infer_date_column(preview_df)
+    all_cols = list(preview_df.columns)
 
-                    profile_df = profile_dataframe(df)
-                    id_like_cols = detect_id_like_columns(df)
-                    constant_cols = detect_constant_columns(df)
-                    high_missing_cols = detect_high_missing_columns(df, threshold=0.9)
-                    wide_info = detect_wide_format_patterns(df)
-                    compatibility = score_dataset_compatibility(df, "date", metric_keys, dimension_keys)
-                    date_freq = infer_date_frequency(df["date"])
+    if len(all_cols) > 0:
+        default_date_idx = all_cols.index(inferred_date) if inferred_date in all_cols else 0
+        selected_date_col = st.selectbox(
+            "Date column",
+            all_cols,
+            index=default_date_idx,
+            key="wizard_date_col",
+        )
+    else:
+        selected_date_col = None
 
-                    recommended_exclusions = sorted(set(
-                        [c for c in id_like_cols if c != "date"] +
-                        [c for c in constant_cols if c != "date"] +
-                        [c for c in high_missing_cols if c != "date"]
-                    ))
+    if selected_date_col is not None:
+        try:
+            loaded = load_data_from_df(raw_df, selected_date_col)
+            df = loaded["df"]
+            dimension_keys = loaded["dimension_keys"]
+            metric_keys = loaded["metric_keys"]
 
-                    default_analysis_columns = [
-                        c for c in df.columns if c not in ["date"] and c not in recommended_exclusions
-                    ]
+            set_active_dataframe(df)
 
-                    selected_analysis_columns = st.multiselect(
-                        "Include columns",
-                        options=[c for c in df.columns if c != "date"],
-                        default=default_analysis_columns
-                    )
+            profile_df = profile_dataframe(df)
+            id_like_cols = detect_id_like_columns(df)
+            constant_cols = detect_constant_columns(df)
+            high_missing_cols = detect_high_missing_columns(df, threshold=0.9)
+            wide_info = detect_wide_format_patterns(df)
+            compatibility = score_dataset_compatibility(df, "date", metric_keys, dimension_keys)
+            date_freq = infer_date_frequency(df["date"])
 
-                    allowed_metric_options = [c for c in metric_keys if c in selected_analysis_columns]
-                    allowed_group_options = [c for c in dimension_keys if c in selected_analysis_columns]
+            recommended_exclusions = sorted(set(
+                [c for c in id_like_cols if c != "date"] +
+                [c for c in constant_cols if c != "date"] +
+                [c for c in high_missing_cols if c != "date"]
+            ))
 
-                    dynamic_metric_defaults = [c for c in suggest_default_metrics(df) if c in allowed_metric_options]
-                    dynamic_group_defaults = [c for c in suggest_default_groups(df) if c in allowed_group_options]
+            default_analysis_columns = [
+                c for c in df.columns if c not in ["date"] and c not in recommended_exclusions
+            ]
 
-                    selected_metrics = st.multiselect(
-                        "Performance metrics",
-                        options=allowed_metric_options,
-                        default=dynamic_metric_defaults or allowed_metric_options[:min(3, len(allowed_metric_options))]
-                    )
+            selected_analysis_columns = st.multiselect(
+                "Include columns",
+                options=[c for c in df.columns if c != "date"],
+                default=st.session_state.get("selected_analysis_columns", default_analysis_columns),
+                key="wizard_analysis_cols",
+            )
 
-                    selected_groups = st.multiselect(
-                        "Segment columns",
-                        options=allowed_group_options,
-                        default=dynamic_group_defaults
-                    )
+            allowed_metric_options = [c for c in metric_keys if c in selected_analysis_columns]
+            allowed_group_options = [c for c in dimension_keys if c in selected_analysis_columns]
 
-                    validation = validate_dataset_for_analysis(df, "date", selected_metrics, selected_groups)
-                    for err in validation["errors"]:
-                        st.error(err)
-                    for warn in validation["warnings"]:
-                        st.warning(warn)
+            dynamic_metric_defaults = [c for c in suggest_default_metrics(df) if c in allowed_metric_options]
+            dynamic_group_defaults = [c for c in suggest_default_groups(df) if c in allowed_group_options]
 
-                    anomaly_candidates = suggest_anomaly_dates(df, selected_metrics, top_n=5)
+            selected_metrics = st.multiselect(
+                "Performance metrics",
+                options=allowed_metric_options,
+                default=st.session_state.get(
+                    "selected_metrics",
+                    dynamic_metric_defaults or allowed_metric_options[:min(3, len(allowed_metric_options))]
+                ),
+                key="wizard_metrics",
+            )
 
-                    st.session_state["selected_analysis_columns"] = selected_analysis_columns
-                    st.session_state["selected_metrics"] = selected_metrics
-                    st.session_state["selected_groups"] = selected_groups
-                    st.session_state["resolved_dimension_keys"] = dimension_keys
-                    st.session_state["resolved_metric_keys"] = metric_keys
-                    st.session_state["profile_df"] = profile_df
-                    st.session_state["recommended_exclusions"] = recommended_exclusions
-                    st.session_state["compatibility"] = compatibility
-                    st.session_state["anomaly_candidates"] = anomaly_candidates
+            selected_groups = st.multiselect(
+                "Segment columns",
+                options=allowed_group_options,
+                default=st.session_state.get("selected_groups", dynamic_group_defaults),
+                key="wizard_groups",
+            )
 
-                    with st.expander("✅ Data Readiness", expanded=True):
-                        st.metric("Readiness Score", f'{compatibility["score"]}/100', compatibility["label"])
+            validation = validate_dataset_for_analysis(df, "date", selected_metrics, selected_groups)
+            for err in validation["errors"]:
+                st.error(err)
+            for warn in validation["warnings"]:
+                st.warning(warn)
 
-                        for reason in compatibility["reasons"]:
-                            st.markdown(f"- {reason}")
+            anomaly_candidates = suggest_anomaly_dates(df, selected_metrics, top_n=5)
 
-                        st.caption(f"Inferred date frequency: {date_freq}")
+            st.session_state["df"] = df
+            st.session_state["selected_analysis_columns"] = selected_analysis_columns
+            st.session_state["selected_metrics"] = selected_metrics
+            st.session_state["selected_groups"] = selected_groups
+            st.session_state["resolved_dimension_keys"] = dimension_keys
+            st.session_state["resolved_metric_keys"] = metric_keys
+            st.session_state["profile_df"] = profile_df
+            st.session_state["recommended_exclusions"] = recommended_exclusions
+            st.session_state["compatibility"] = compatibility
+            st.session_state["anomaly_candidates"] = anomaly_candidates
+            st.session_state["date_freq"] = date_freq
+            st.session_state["wide_info"] = wide_info
 
-                        if recommended_exclusions:
-                            st.info(f"Recommended exclusions: {recommended_exclusions}")
+        except Exception as e:
+            st.error(
+                f"Could not prepare this dataset for analysis: {e}. "
+                "Make sure your file has one usable date column and at least one numeric KPI column."
+            )
+            st.session_state["df"] = None
 
-                        if wide_info["likely_wide_format"]:
-                            st.warning(
-                                "This file may be in wide format. Oops AI works best with long-format time-series data."
-                            )
-
-                        with st.expander("Schema preview", expanded=False):
-                            st.dataframe(profile_df, use_container_width=True)
-
-                        if anomaly_candidates:
-                            st.caption(f"Suggested anomaly dates: {', '.join(anomaly_candidates)}")
-
-                except Exception as e:
-                    st.error(
-                        f"Could not prepare this dataset for analysis: {e}. "
-                        "Make sure your file has one usable date column and at least one numeric KPI column."
-                    )
-                    df = None
-
-    with st.expander("📚 Knowledge Base", expanded=False):
-        pdf_files = st.file_uploader(
-            "Upload PDFs (optional)",
-            type=["pdf"],
-            accept_multiple_files=True,
-            help="Powers the RAG explanation. Skip to use LLM-only mode."
+    nav1, nav2 = st.columns([1, 1])
+    with nav1:
+        st.button("⬅ Back", on_click=go_prev_step)
+    with nav2:
+        st.button(
+            "Next ➜",
+            on_click=go_next_step,
+            disabled=st.session_state.get("df") is None
         )
 
-    with st.expander("🔧 Analysis Settings", expanded=True):
-        candidate_dates = st.session_state.get("anomaly_candidates", [])
-        default_anomaly_value = pd.Timestamp("2024-04-20")
+# ── STEP 3: Data readiness ─────────────────────────────────────────────────────
+elif step == 3:
+    st.subheader("Step 3 — Data Readiness")
 
-        if candidate_dates:
-            suggested_default = pd.Timestamp(candidate_dates[0])
-            use_suggested = st.checkbox("Use suggested anomaly date", value=True)
-            anomaly_date = st.date_input(
-                "Anomaly start date",
-                value=suggested_default if use_suggested else default_anomaly_value
-            )
-            st.caption(f"Top candidate dates: {', '.join(candidate_dates[:5])}")
-        else:
-            anomaly_date = st.date_input("Anomaly start date", value=default_anomaly_value)
+    df = st.session_state.get("df")
+    compatibility = st.session_state.get("compatibility")
+    profile_df = st.session_state.get("profile_df")
+    recommended_exclusions = st.session_state.get("recommended_exclusions", [])
+    anomaly_candidates = st.session_state.get("anomaly_candidates", [])
+    date_freq = st.session_state.get("date_freq", "unknown")
+    wide_info = st.session_state.get("wide_info", {"likely_wide_format": False})
 
-        top_k = st.slider("RAG top-k chunks", 3, 10, 5)
-        run_vision = st.checkbox("Enable vision analysis", value=True)
-        debug_mode = st.checkbox("Debug mode", value=False)
+    if df is None or compatibility is None:
+        st.warning("Configure your columns first.")
+        st.button("⬅ Back", on_click=go_prev_step)
+        st.stop()
 
-        st.markdown("---")
+    st.metric("Readiness Score", f'{compatibility["score"]}/100', compatibility["label"])
 
-        session_id = get_session_id(st.session_state)
-        run_clicked = st.button("🚀 Run Full Analysis", use_container_width=True)
-        if run_clicked:
-            rate_ok, rate_msg = rate_limiter.check(session_id)
-        else:
-            rate_ok, rate_msg = True, "ok"
-        run_btn = run_clicked and rate_ok
+    for reason in compatibility["reasons"]:
+        st.markdown(f"- {reason}")
 
-        if run_clicked and not rate_ok:
-            st.warning(rate_msg)
+    st.caption(f"Inferred date frequency: {date_freq}")
 
-        if "request_id" not in st.session_state:
-            st.session_state["request_id"] = str(uuid.uuid4())
+    if recommended_exclusions:
+        st.info(f"Recommended exclusions: {recommended_exclusions}")
 
+    if wide_info.get("likely_wide_format"):
+        st.warning("This file may be in wide format. Oops AI works best with long-format time-series data.")
+
+    if anomaly_candidates:
+        st.caption(f"Suggested anomaly dates: {', '.join(anomaly_candidates)}")
+
+    with st.expander("Schema preview", expanded=False):
+        st.dataframe(profile_df, use_container_width=True)
+
+    nav1, nav2 = st.columns([1, 1])
+    with nav1:
+        st.button("⬅ Back", on_click=go_prev_step)
+    with nav2:
+        st.button("Next ➜", on_click=go_next_step)
+
+# ── STEP 4: Analysis settings ──────────────────────────────────────────────────
+elif step == 4:
+    st.subheader("Step 4 — Analysis Settings")
+
+    candidate_dates = st.session_state.get("anomaly_candidates", [])
+    default_anomaly_value = pd.Timestamp("2024-04-20")
+
+    if candidate_dates:
+        suggested_default = pd.Timestamp(candidate_dates[0])
+        use_suggested = st.checkbox("Use suggested anomaly date", value=True, key="wizard_use_suggested")
+        anomaly_date = st.date_input(
+            "Anomaly start date",
+            value=suggested_default if use_suggested else default_anomaly_value,
+            key="wizard_anomaly_date",
+        )
+        st.caption(f"Top candidate dates: {', '.join(candidate_dates[:5])}")
+    else:
+        anomaly_date = st.date_input(
+            "Anomaly start date",
+            value=default_anomaly_value,
+            key="wizard_anomaly_date",
+        )
+
+    top_k = st.slider("RAG top-k chunks", 3, 10, 5, key="wizard_top_k")
+    run_vision = st.checkbox("Enable vision analysis", value=True, key="wizard_run_vision")
+    debug_mode = st.checkbox("Debug mode", value=False, key="wizard_debug_mode")
+
+    pdf_files = st.file_uploader(
+        "Upload PDFs for RAG (optional)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="wizard_pdf_files",
+        help="Powers the RAG explanation. Skip to use LLM-only mode."
+    )
+
+    st.session_state["anomaly_date"] = anomaly_date
+    st.session_state["top_k"] = top_k
+    st.session_state["run_vision"] = run_vision
+    st.session_state["debug_mode"] = debug_mode
+    st.session_state["pdf_files"] = pdf_files
+
+    nav1, nav2 = st.columns([1, 1])
+    with nav1:
+        st.button("⬅ Back", on_click=go_prev_step)
+    with nav2:
+        st.button("Next ➜", on_click=go_next_step)
+
+# ── STEP 5: Ready to run ───────────────────────────────────────────────────────
+elif step == 5:
+    st.subheader("Step 5 — Run Analysis")
+
+    df = st.session_state.get("df")
+    selected_metrics = st.session_state.get("selected_metrics", [])
+    selected_groups = st.session_state.get("selected_groups", [])
+    anomaly_date = st.session_state.get("anomaly_date", pd.Timestamp("2024-04-20"))
+    top_k = st.session_state.get("top_k", 5)
+    run_vision = st.session_state.get("run_vision", True)
+    debug_mode = st.session_state.get("debug_mode", False)
+    pdf_files = st.session_state.get("pdf_files", None)
+
+    st.write("Review your setup and run the analysis.")
+    st.markdown(f"**Metrics:** {selected_metrics if selected_metrics else 'None selected'}")
+    st.markdown(f"**Segment columns:** {selected_groups if selected_groups else 'None selected'}")
+    st.markdown(f"**Anomaly date:** {anomaly_date}")
+
+    session_id = get_session_id(st.session_state)
+    run_clicked = st.button("🚀 Run Full Analysis", use_container_width=True)
+    if run_clicked:
+        rate_ok, rate_msg = rate_limiter.check(session_id)
+    else:
+        rate_ok, rate_msg = True, "ok"
+
+    run_btn = run_clicked and rate_ok
+
+    if run_clicked and not rate_ok:
+        st.warning(rate_msg)
+
+    if "request_id" not in st.session_state:
+        st.session_state["request_id"] = str(uuid.uuid4())
+
+    nav1, _ = st.columns([1, 1])
+    with nav1:
+        st.button("⬅ Back", on_click=go_prev_step)
+
+# Make values available below
+df = st.session_state.get("df")
+selected_metrics = st.session_state.get("selected_metrics", [])
+selected_groups = st.session_state.get("selected_groups", [])
+anomaly_date = st.session_state.get("anomaly_date", pd.Timestamp("2024-04-20"))
+top_k = st.session_state.get("top_k", 5)
+run_vision = st.session_state.get("run_vision", True)
+debug_mode = st.session_state.get("debug_mode", False)
+pdf_files = st.session_state.get("pdf_files", None)
+run_btn = locals().get("run_btn", False)
         
-# ── Guard: need data + API key ─────────────────────────────────────────────────
+# ── Guard: only show results after setup is complete ───────────────────────────
+if step < 5:
+    st.stop()
+
 if df is None:
-    st.info("👈 Load your data in the sidebar to get started.")
+    st.info("Complete setup first.")
     st.stop()
 
 if len(st.session_state.get("selected_metrics", [])) == 0:
-    st.warning(
-        "No usable numeric performance metrics are currently selected. "
-        "Choose at least one metric in the sidebar to run the analysis."
-    )
+    st.warning("Choose at least one numeric performance metric before running analysis.")
     st.stop()
 
 if not os.environ.get("OPENAI_API_KEY"):
     st.warning(
         "⚠️ No OpenAI API key found. In deployment, add OPENAI_API_KEY to Streamlit secrets. "
-        "For local testing, enter it in the sidebar."
+        "For local testing, add one before running analysis."
     )
     st.stop()
-
-# ── Lazy imports (only after API key is set) ───────────────────────────────────
+    
+# Lazy imports (only after API key is set)
 try:
     from src.agent import run_agent
     from src.multimodal import KPIChartGenerator, MultimodalAnalyzer, CrossModalChecker
@@ -538,7 +673,7 @@ with tab1:
     summary_metrics = [c for c in selected_metrics if c in numeric_cols]
 
     if len(summary_metrics) == 0:
-        st.info("No performance metrics selected. Choose one or more numeric metrics in the sidebar.")
+        st.info("No performance metrics selected. Go back to setup and choose one or more numeric metrics.")
     else:
         cols = st.columns(len(summary_metrics))
         for col, m in zip(cols, summary_metrics):
@@ -807,7 +942,7 @@ with tab2:
         st.error(f"RAG error: {st.session_state.get('rag_error')}")
 
     else:
-        st.info("Click **Run Full Analysis** in the sidebar to generate the root cause explanation.")
+        st.info("Use the setup flow above, then click **Run Full Analysis** in Step 5.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # SECURITY: Free-form follow-up question box
@@ -877,7 +1012,7 @@ with tab3:
     st.caption("GPT-4o-mini reads the chart image and its findings are compared against data-derived ground truth.")
 
     if not run_vision:
-        st.info("Vision analysis is disabled. Enable it in the sidebar.")
+        st.info("Vision analysis is disabled. Enable it in Step 4 of setup.")
     else:
         analyzer = MultimodalAnalyzer()
         checker = CrossModalChecker()
@@ -889,7 +1024,7 @@ with tab3:
         vision_group = selected_groups[0] if len(selected_groups) > 0 else None
 
         if vision_metric is None:
-            st.info("Select at least one performance metric in the sidebar to run vision analysis.")
+            st.info("Select at least one performance metric during setup to run vision analysis.")
         else:
             with st.spinner("Generating chart for vision analysis..."):
                 try:
