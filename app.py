@@ -125,7 +125,20 @@ def build_dynamic_anomaly_summary(df, anomaly_ts, selected_metrics, selected_gro
                     lines.append(f"    [{grp}={val}] {bd:.3g} → {ad:.3g} ({p2:+.1f}%)")
 
     return "\n".join(lines)
+    
+def validate_dataset(df):
 
+    numeric_cols = df.select_dtypes(include=["number"]).columns
+    date_like_cols = [c for c in df.columns if "date" in c.lower()]
+
+    if len(numeric_cols) == 0:
+        return False, "Dataset must contain at least one numeric KPI column."
+
+    if len(date_like_cols) == 0:
+        return False, "Dataset should contain a date column."
+
+    return True, None
+    
 # ── Make src/ importable ──────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -334,16 +347,24 @@ if step == 1:
 
     st.info(
     """
-    **What data works best with Oops AI**
+    ### What data works best with Oops AI
     
     Oops AI analyzes **time-series KPI datasets**.
-    ✔ One **date column** (e.g., daily, weekly, or monthly).
-    ✔ At least one **numeric KPI metric** (e.g., revenue, sales, conversions).
-    ✔ Optional segment columns (e.g., region, category, device).
     
-    Examples: sales dashboards, marketing metrics, operational KPIs.
+    **Required**
+    - ✔ **One date column** (e.g., daily, weekly, or monthly)
+    - ✔ **At least one numeric KPI metric** (e.g., revenue, sales, conversions)
+    
+    **Optional**
+    - ✔ **Segment columns** (e.g., region, category, device)
+    
+    **Examples**
+    - Sales dashboards
+    - Marketing performance metrics
+    - Operational KPIs
     
     Avoid uploading datasets that only contain IDs or text fields.
+    
     You will select the **date column, KPI metrics, and segment columns** in the next step.
     """
     )
@@ -457,6 +478,11 @@ if step == 1:
                             st.session_state.pop(key, None)
                 
                     st.success(f"Uploaded file: {len(raw_df):,} rows")
+                    valid, msg = validate_dataset(raw_df)
+
+                    if not valid:
+                        st.error(msg)
+                        st.stop()
             except Exception as e:
                 st.error(f"Could not read uploaded file: {e}")
 
@@ -468,6 +494,7 @@ if step == 1:
     
     with col3:
         st.button("Next ➜", on_click=go_next_step, disabled=raw_df is None)
+        
         
 # ── STEP 2: Configure columns ──────────────────────────────────────────────────
 elif step == 2:
@@ -531,7 +558,7 @@ elif step == 2:
             valid_analysis_defaults = [c for c in saved_analysis_defaults if c in analysis_options]
             
             selected_analysis_columns = st.multiselect(
-                "Include columns",
+                "Columns used for analysis",
                 options=analysis_options,
                 default=valid_analysis_defaults,
                 key="wizard_analysis_cols",
@@ -556,14 +583,14 @@ elif step == 2:
             valid_group_defaults = [c for c in saved_group_defaults if c in allowed_group_options]
             
             selected_metrics = st.multiselect(
-                "Performance metrics",
+                "KPI metrics to monitor",
                 options=allowed_metric_options,
                 default=valid_metric_defaults,
                 key="wizard_metrics",
             )
             
             selected_groups = st.multiselect(
-                "Segment columns",
+                "Dimensions for root-cause analysis",
                 options=allowed_group_options,
                 default=valid_group_defaults,
                 key="wizard_groups",
@@ -791,7 +818,8 @@ pdf_files = st.session_state.get("pdf_files", None)
 run_btn = locals().get("run_btn", False)
 
 analysis_ran = st.session_state.get("analysis_ran", False)
-        
+
+
 # ── Guard: only show results after setup is complete ───────────────────────────
 if step < 5:
     st.info("Complete setup to run analysis.")
