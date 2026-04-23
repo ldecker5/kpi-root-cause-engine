@@ -39,16 +39,20 @@ from src.data_profiler import (
     score_dataset_compatibility,
 )
 
-# Wizard state
+# ── Wizard navigation ─────────────────────────────────────────
 
 if "setup_step" not in st.session_state:
     st.session_state["setup_step"] = 1
 
+TOTAL_STEPS = 5
+
 def go_next_step():
-    st.session_state["setup_step"] = min(5, st.session_state["setup_step"] + 1)
+    if st.session_state["setup_step"] < TOTAL_STEPS:
+        st.session_state["setup_step"] += 1
 
 def go_prev_step():
-    st.session_state["setup_step"] = max(1, st.session_state["setup_step"] - 1)
+    if st.session_state["setup_step"] > 1:
+        st.session_state["setup_step"] -= 1
 
 # App
 def app_log(event_type, **payload):
@@ -276,17 +280,38 @@ st.info(
 1. Upload a dataset with a date column and KPI metrics  
 2. Configure metrics and segment columns  
 3. Review data readiness and suggested anomaly dates  
-4. Run the full analysis
+4. Run the full analysis in Step 5
 """
 )
 
 st.markdown("### Setup Progress")
+
 progress_cols = st.columns(len(setup_steps))
 for i, step_name in enumerate(setup_steps, start=1):
-    if i == current_step:
-        progress_cols[i - 1].markdown(f"**➡ {step_name}**")
-    else:
-        progress_cols[i - 1].markdown(step_name)
+    label = f"**➡ {step_name}**" if i == current_step else step_name
+    progress_cols[i - 1].markdown(label)
+
+jump_cols = st.columns(len(setup_steps))
+for i, step_name in enumerate(setup_steps, start=1):
+    disabled = False
+
+    # prevent jumping forward before required setup exists
+    if i >= 2 and st.session_state.get("raw_df") is None:
+        disabled = True
+    if i >= 3 and st.session_state.get("df") is None:
+        disabled = True
+
+    jump_cols[i - 1].button(
+        ("➡ Current" if i == current_step else f"Go to {i}")
+        key=f"jump_step_{i}",
+        use_container_width=True,
+        disabled=disabled,
+        on_click=lambda target=i: st.session_state.update({"setup_step": target}),
+    )
+
+    name_cols = st.columns(len(setup_steps))
+    for i, step_name in enumerate(setup_steps, start=1):
+        name_cols[i - 1].caption(step_name)
 # ═══════════════════════════════════════════════════════════════════════════════
 # FULL-PAGE SETUP WIZARD
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -428,6 +453,8 @@ elif step == 2:
                 ),
                 key="wizard_metrics",
             )
+            st.session_state["selected_metrics"] = selected_metrics
+            st.session_state["selected_groups"] = selected_groups
 
             selected_groups = st.multiselect(
                 "Segment columns",
@@ -457,6 +484,21 @@ elif step == 2:
             st.session_state["date_freq"] = date_freq
             st.session_state["wide_info"] = wide_info
 
+            for key in [
+                "agent_result",
+                "rag_result",
+                "rag_baseline",
+                "rag_mode",
+                "rag_error",
+                "rag_pipeline",
+                "vision_result",
+                "data_summary",
+                "consistency",
+            ]:
+                st.session_state.pop(key, None)
+            
+            st.session_state["analysis_ran"] = False
+
         except Exception as e:
             st.error(
                 f"Could not prepare this dataset for analysis: {e}. "
@@ -464,15 +506,17 @@ elif step == 2:
             )
             st.session_state["df"] = None
 
-    nav1, nav2 = st.columns([1, 1])
-    with nav1:
-        st.button("⬅ Back", on_click=go_prev_step)
-    with nav2:
-        st.button(
-            "Next ➜",
-            on_click=go_next_step,
-            disabled=st.session_state.get("df") is None
-        )
+    st.divider()
+
+    col1, col2, col3 = st.columns([1,1,1])
+    
+    with col1:
+        if st.session_state["setup_step"] > 1:
+            st.button("⬅ Back", on_click=go_prev_step)
+    
+    with col3:
+        if st.session_state["setup_step"] < TOTAL_STEPS:
+            st.button("Next ➜", on_click=go_next_step)
 
 # ── STEP 3: Data readiness ─────────────────────────────────────────────────────
 elif step == 3:
@@ -557,6 +601,21 @@ elif step == 4:
     st.session_state["debug_mode"] = debug_mode
     st.session_state["pdf_files"] = pdf_files
 
+    for key in [
+        "agent_result",
+        "rag_result",
+        "rag_baseline",
+        "rag_mode",
+        "rag_error",
+        "rag_pipeline",
+        "vision_result",
+        "data_summary",
+        "consistency",
+    ]:
+        st.session_state.pop(key, None)
+    
+    st.session_state["analysis_ran"] = False
+
     nav1, nav2 = st.columns([1, 1])
     with nav1:
         st.button("⬅ Back", on_click=go_prev_step)
@@ -589,7 +648,9 @@ elif step == 5:
         rate_ok, rate_msg = True, "ok"
 
     run_btn = run_clicked and rate_ok
-
+    if run_clicked:
+        st.session_state["analysis_ran"] = True
+    
     if run_clicked and not rate_ok:
         st.warning(rate_msg)
 
@@ -610,11 +671,18 @@ run_vision = st.session_state.get("run_vision", True)
 debug_mode = st.session_state.get("debug_mode", False)
 pdf_files = st.session_state.get("pdf_files", None)
 run_btn = locals().get("run_btn", False)
+
+analysis_ran = st.session_state.get("analysis_ran", False)
         
 # ── Guard: only show results after setup is complete ───────────────────────────
 if step < 5:
+    st.info("Complete setup to run analysis.")
     st.stop()
 
+if not analysis_ran and not run_btn:
+    st.info("Click **Run Full Analysis** in Step 5 to generate results.")
+    st.stop()
+    
 if df is None:
     st.info("Complete setup first.")
     st.stop()
