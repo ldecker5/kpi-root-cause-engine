@@ -337,9 +337,9 @@ if step == 1:
     **What data works best with Oops AI**
     
     Oops AI analyzes **time-series KPI datasets**.
-    ✔ One **date column** (e.g., daily, weekly, or monthly)
-    ✔ At least one **numeric KPI metric** (e.g., revenue, sales, conversions)
-    ✔ Optional segment columns (e.g., region, category, device, etc.)
+    ✔ One **date column** (e.g., daily, weekly, or monthly).
+    ✔ At least one **numeric KPI metric** (e.g., revenue, sales, conversions).
+    ✔ Optional segment columns (e.g., region, category, device).
     
     Examples: sales dashboards, marketing metrics, operational KPIs.
     
