@@ -1,17 +1,5 @@
 """
-app.py
-------
-MILESTONE 12: Security Hardening — KPI Root Cause Analysis Engine
-Streamlit interface that wires together:
-  • Data loading (sample CSV or upload)
-  • Anomaly detection via tool-calling agent
-  • RAG-powered root cause explanation
-  • Chart generation + GPT-4o-mini vision analysis
-  • Cross-modal consistency check
-  • Security: input validation, output filtering, rate limiting (Milestone 12)
 
-Run:
-    streamlit run app.py
 """
 
 import os
@@ -296,10 +284,15 @@ with st.sidebar:
         else:
             st.error("sample_ecommerce_kpi_data.csv not found in data/")
     else:
-        uploaded = st.file_uploader("Upload CSV", type=["csv"])
+        uploaded = st.file_uploader("Upload data file", type=["csv", "xlsx", "xls", "tsv"])
         if uploaded:
-            raw_df = pd.read_csv(uploaded)
-            st.success(f"✓ {uploaded.name} — {len(raw_df):,} rows")
+            suffix = Path(uploaded.name).suffix.lower()
+            if suffix == ".csv":
+                raw_df = pd.read_csv(uploaded)
+            elif suffix == ".tsv":
+                raw_df = pd.read_csv(uploaded, sep="\t")
+            elif suffix in [".xlsx", ".xls"]:
+                raw_df = pd.read_excel(uploaded)
 
     if raw_df is not None:
         preview_df, _ = normalize_columns(raw_df.copy())
