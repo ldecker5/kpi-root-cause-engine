@@ -100,33 +100,31 @@ The system follows a multi-step reasoning process:
 # Running the Project Locally
 
 ### 1. Clone the repository
+```
 git clone <repo-url>
 cd kpi-root-cause-engine
+```
 
 ### 2. Create a virtual environment
-python -m venv venv
-
+```python -m venv venv```
 
 ### 3. Activate the environment
 Mac / Linux
-source venv/bin/activate
-
+```source venv/bin/activate```
 
 Windows
-venv\Scripts\activate
-
+```venv\Scripts\activate```
 
 ### 4. Install dependencies
-pip install -r requirements.txt
+```pip install -r requirements.txt```
 
 
 ### 5. Add OpenAI API key
 Create a `.env` file:
-OPENAI_API_KEY=sk-your-key-here
+```OPENAI_API_KEY=sk-your-key-here```
 
 ### 6. Run the application
-streamlit run app.py
-
+```streamlit run app.py```
 
 ---
 
@@ -135,15 +133,14 @@ streamlit run app.py
 The application is deployed on **Streamlit Community Cloud**.
 
 Entrypoint:
-app.py
-
+```app.py```
 
 Required secret:
 
 ```toml
 OPENAI_API_KEY = "sk-your-key-here"
-
-Authors
+```
+# Authors
 Oops AI
 DSBA-6010 – LLM Systems Project
 
