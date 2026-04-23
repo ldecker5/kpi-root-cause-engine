@@ -483,19 +483,61 @@ elif step == 2:
                 [c for c in high_missing_cols if c != "date"]
             ))
 
+            analysis_options = [c for c in df.columns if c != "date"]
+            
             default_analysis_columns = [
-                c for c in df.columns if c not in ["date"] and c not in recommended_exclusions
+                c for c in analysis_options if c not in recommended_exclusions
             ]
-
+            
+            saved_analysis_defaults = st.session_state.get(
+                "selected_analysis_columns",
+                default_analysis_columns
+            )
+            
+            valid_analysis_defaults = [c for c in saved_analysis_defaults if c in analysis_options]
+            
             selected_analysis_columns = st.multiselect(
                 "Include columns",
-                options=[c for c in df.columns if c != "date"],
-                default=st.session_state.get("selected_analysis_columns", default_analysis_columns),
+                options=analysis_options,
+                default=valid_analysis_defaults,
                 key="wizard_analysis_cols",
             )
-
+            
             allowed_metric_options = [c for c in metric_keys if c in selected_analysis_columns]
             allowed_group_options = [c for c in dimension_keys if c in selected_analysis_columns]
+
+            dynamic_metric_defaults = [c for c in suggest_default_metrics(df) if c in allowed_metric_options]
+            dynamic_group_defaults = [c for c in suggest_default_groups(df) if c in allowed_group_options]
+            
+            saved_metric_defaults = st.session_state.get(
+                "selected_metrics",
+                dynamic_metric_defaults or allowed_metric_options[:min(3, len(allowed_metric_options))]
+            )
+            saved_group_defaults = st.session_state.get(
+                "selected_groups",
+                dynamic_group_defaults
+            )
+            
+            valid_metric_defaults = [c for c in saved_metric_defaults if c in allowed_metric_options]
+            valid_group_defaults = [c for c in saved_group_defaults if c in allowed_group_options]
+            
+            selected_metrics = st.multiselect(
+                "Performance metrics",
+                options=allowed_metric_options,
+                default=valid_metric_defaults,
+                key="wizard_metrics",
+            )
+            
+            selected_groups = st.multiselect(
+                "Segment columns",
+                options=allowed_group_options,
+                default=valid_group_defaults,
+                key="wizard_groups",
+            )
+            
+            st.session_state["selected_analysis_columns"] = selected_analysis_columns
+            st.session_state["selected_metrics"] = selected_metrics
+            st.session_state["selected_groups"] = selected_groups
 
             dynamic_metric_defaults = [c for c in suggest_default_metrics(df) if c in allowed_metric_options]
             dynamic_group_defaults = [c for c in suggest_default_groups(df) if c in allowed_group_options]
