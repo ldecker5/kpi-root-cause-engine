@@ -14,7 +14,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-from src.data_loader import load_data, clean_column_name, normalize_columns, infer_date_column
+from src.data_loader import clean_column_name, normalize_columns, infer_date_column
 from src.tools import set_active_dataframe
 from src.security import (
     validate_input,
@@ -472,59 +472,6 @@ with st.sidebar:
     if "request_id" not in st.session_state:
         st.session_state["request_id"] = str(uuid.uuid4())
         
-except Exception as e:
-    st.error(
-        f"Could not prepare this dataset for analysis: {e}. "
-        "Make sure your file has one usable date column and at least one numeric KPI column."
-    )
-    df = None
-
-    st.markdown("---")
-    st.markdown("### 📚 Knowledge Base")
-    pdf_files = st.file_uploader(
-        "Upload PDFs (optional)",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="Powers the RAG explanation. Skip to use LLM-only mode."
-    )
-
-    st.markdown("---")
-    st.markdown("### 🔧 Settings")
-    candidate_dates = st.session_state.get("anomaly_candidates", [])
-    default_anomaly_value = pd.Timestamp("2024-04-20")
-    
-    if candidate_dates:
-        suggested_default = pd.Timestamp(candidate_dates[0])
-        use_suggested = st.checkbox("Use suggested anomaly date", value=True)
-        anomaly_date = st.date_input(
-            "Anomaly start date",
-            value=suggested_default if use_suggested else default_anomaly_value
-        )
-        st.caption(f"Top candidate dates: {', '.join(candidate_dates[:5])}")
-    else:
-        anomaly_date = st.date_input("Anomaly start date", value=default_anomaly_value)
-    top_k = st.slider("RAG top-k chunks", 3, 10, 5)
-    run_vision = st.checkbox("Enable vision analysis", value=True)
-    debug_mode = st.checkbox("Debug mode", value=False)
-
-    st.markdown("---")
-
-    # ── SECURITY: Rate-limit the Run button ───────────────────────────────────
-    session_id = get_session_id(st.session_state)
-    run_clicked = st.button("🚀 Run Full Analysis", use_container_width=True)
-    if run_clicked:
-        rate_ok, rate_msg = rate_limiter.check(session_id)
-    else:
-        rate_ok, rate_msg = True, "ok"
-    run_btn = run_clicked and rate_ok
-
-    if run_clicked and not rate_ok:
-        st.warning(rate_msg)
-
-    if "request_id" not in st.session_state:
-        st.session_state["request_id"] = str(uuid.uuid4())
-
-
 # ── Guard: need data + API key ─────────────────────────────────────────────────
 if df is None:
     st.info("👈 Load your data in the sidebar to get started.")
@@ -546,7 +493,6 @@ if not os.environ.get("OPENAI_API_KEY"):
 
 # ── Lazy imports (only after API key is set) ───────────────────────────────────
 try:
-    from src.data_loader import load_data
     from src.agent import run_agent
     from src.multimodal import KPIChartGenerator, MultimodalAnalyzer, CrossModalChecker
     from src.rag_pipeline import RAGPipeline
@@ -1063,7 +1009,7 @@ with tab3:
 # TAB 4 — Data Explorer
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab4:
-    st.markdown("#### Data Explorer")
+    st.markdown("#### 📋 Data Explorer")
     st.caption("Inspect cleaned data, schema, and compatibility checks before analysis.")
 
     compatibility = st.session_state.get("compatibility")
